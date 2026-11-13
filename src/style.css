@@ -1,0 +1,42 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #14110d;
+  overflow: hidden;
+}
+
+#game {
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+}
+
+.home-link {
+  position: fixed;
+  top: 14px;
+  left: 16px;
+  z-index: 2;
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(20, 17, 13, 0.8);
+  border: 1px solid #6b5d48;
+  color: #e8dcc4;
+  font: 14px/1.2 Georgia, serif;
+  text-decoration: none;
+}
+
+.home-link:hover {
+  background: #3a3226;
+}
+
+.home-link:focus-visible {
+  outline: 2px solid #f0c05a;
+  outline-offset: 2px;
+}
+
+/* The display rule above would otherwise defeat the hidden attribute. */
+.home-link[hidden] {
+  display: none;
+}
