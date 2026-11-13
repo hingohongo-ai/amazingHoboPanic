@@ -32,7 +32,7 @@ export const PLAYER = {
   /** Anyone this close counts as watching you eat. */
   seenRadius: 230,
   /** Seconds of safety after taking a hit. */
-  mercySec: 0.45,
+  mercySec: 0.6,
 };
 
 export const ENVY = {
@@ -54,15 +54,24 @@ export const PANIC = {
   approachSec: 10,
   /** The horde trickles in over this many seconds of the melee. */
   arrivalSec: 14,
+  /** The longest a melee can run. */
   meleeSec: 32,
+  /** Once the whole horde has arrived, the second whistle blows early when this few are left standing. */
+  lastStanding: 2,
   exitSec: 7,
-  firstHorde: 24,
+  firstHorde: 16,
   hordeGrowth: 6,
   hoboSpeed: 112,
   hoboHp: 4,
-  hoboDamage: 6,
+  hoboDamage: 5,
   hoboSwingCooldown: 0.9,
   hoboReach: 34,
+  /** Chance, each time a hobo picks a target, that he goes for a player who is carrying food. */
+  playerFocus: 0.45,
+  /** Seconds a hobo who grabbed dropped food is a target for the others. */
+  lootEnvySec: 6,
+  /** Seconds a hobo stays angry at a player who bonked him. */
+  madAtPlayerSec: 4,
 };
 
 export const DOG = {
@@ -77,6 +86,13 @@ export const SPAWN = {
   respawnEverySec: 4,
 };
 
+export const TOUCH = {
+  /** Finger travel, in screen pixels, before the thumb stick starts moving you. */
+  deadZone: 12,
+  stickRadius: 52,
+  buttonRadius: 44,
+};
+
 export const COLORS = {
   ground: 0x3d4a36,
   street: 0x5a544c,
@@ -89,6 +105,9 @@ export const COLORS = {
   dog: 0x9b3b2f,
   hobo: 0x6f7f3a,
   hoboKo: 0x55554f,
+  hoboLooter: 0x9aa63a,
+  button: 0x2a2218,
+  buttonEdge: 0xe8c07a,
   crow: 0x0c0c0c,
   wire: 0x1a1a1a,
 };

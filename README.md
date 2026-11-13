@@ -15,12 +15,14 @@ This is the **gray-box prototype**: a flat top-down map with colored rectangles 
 
 ## Controls
 
-- Move: WASD or arrow keys
-- Swing the bindle: Space
-- Eat from the sack: E (in private it lowers Envy, in public it raises it)
-- Drop food: Q (the horde and the dog go for it)
+| Action | Mouse | Touch | Keyboard |
+| --- | --- | --- | --- |
+| Move | Hold the left button; the hobo walks toward the cursor | First finger on the field becomes a thumb stick | WASD or arrows |
+| Swing the bindle | SWING button or right-click | SWING button | Space |
+| Eat from the sack | EAT button | EAT button | E |
+| Drop food | DROP button | DROP button | Q |
 
-Keyboard only for now; touch controls come later.
+Eating in private lowers Envy; eating where anyone can see raises it. Dropped food pulls the horde and the dog off you, and the hobo who grabs it becomes a target for the rest. On a phone, play in landscape.
 
 ## Develop
 

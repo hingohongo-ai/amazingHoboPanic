@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { COLORS, DOG, ENVY, ITEMS, PANIC, PLAYER, SPAWN, VIEW, WORLD, type ItemType } from '../config';
+import { COLORS, DOG, ENVY, ITEMS, PANIC, PLAYER, SPAWN, TOUCH, VIEW, WORLD, type ItemType } from '../config';
 import { Envy } from '../envy';
 import * as sfx from '../audio';
 import { showHome } from '../home';
@@ -40,6 +40,10 @@ interface Hobo {
   target: Target;
   /** Whoever bonked this hobo last. Grudges are what turn the horde on itself. */
   grudge: Hobo | null;
+  /** While positive, he has just eaten dropped food and the others want a word. */
+  looter: number;
+  /** While positive, the player bonked him and he remembers. */
+  madAtPlayer: number;
 }
 
 interface Townsperson {
@@ -79,7 +83,17 @@ export class GameScene extends Phaser.Scene {
   private hud!: Phaser.GameObjects.Text;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
 
+  // Mouse and touch: one pointer steers, the on-screen buttons act.
+  private steer: Phaser.Input.Pointer | null = null;
+  private steerOrigin: Point = { x: 0, y: 0 };
+  private stickBase!: Phaser.GameObjects.Arc;
+  private stickKnob!: Phaser.GameObjects.Arc;
+  private swingHeld = false;
+  private wantEat = false;
+  private wantDrop = false;
+
   private respawnIn = SPAWN.respawnEverySec;
+  private stillToArrive = 0;
   private stats: RunStats = { seconds: 0, panics: 0, bonked: 0, eaten: 0 };
 
   constructor() {
@@ -104,6 +118,11 @@ export class GameScene extends Phaser.Scene {
     this.crows = [];
     this.respawnIn = SPAWN.respawnEverySec;
     this.stats = { seconds: 0, panics: 0, bonked: 0, eaten: 0 };
+    this.stillToArrive = 0;
+    this.steer = null;
+    this.swingHeld = false;
+    this.wantEat = false;
+    this.wantDrop = false;
   }
 
   create(): void {
@@ -114,6 +133,7 @@ export class GameScene extends Phaser.Scene {
     this.buildTown();
     this.buildActors();
     this.buildHud();
+    this.buildPointerControls();
 
     for (let i = 0; i < SPAWN.itemsOnMap; i++) this.spawnItem();
 
@@ -184,9 +204,92 @@ export class GameScene extends Phaser.Scene {
       this.crows.push(crow);
     }
     this.hud = this.add
-      .text(14, VIEW.h - 30, '', { fontFamily: 'monospace', fontSize: '15px', color: '#f0e6cc' })
+      .text(14, 38, '', { fontFamily: 'monospace', fontSize: '15px', color: '#f0e6cc' })
       .setScrollFactor(0)
       .setDepth(10);
+  }
+
+  /**
+   * Mouse: hold the left button and the hobo walks toward the cursor; right-click swings.
+   * Touch: the first finger on the play field becomes a thumb stick wherever it lands.
+   * Both: the three buttons in the corner swing, eat and drop.
+   */
+  private buildPointerControls(): void {
+    this.input.addPointer(2); // enough fingers to steer and press a button at once
+    this.input.mouse?.disableContextMenu();
+
+    this.stickBase = this.add.circle(0, 0, TOUCH.stickRadius, 0xffffff, 0.08).setScrollFactor(0).setDepth(10);
+    this.stickBase.setStrokeStyle(2, COLORS.buttonEdge, 0.5).setVisible(false);
+    this.stickKnob = this.add.circle(0, 0, 20, COLORS.buttonEdge, 0.45).setScrollFactor(0).setDepth(10).setVisible(false);
+
+    const button = (x: number, y: number, label: string, onDown: () => void, onUp?: () => void): void => {
+      const disc = this.add.circle(x, y, TOUCH.buttonRadius, COLORS.button, 0.6).setScrollFactor(0).setDepth(10);
+      disc.setStrokeStyle(2, COLORS.buttonEdge, 0.8).setInteractive({ useHandCursor: true });
+      this.add
+        .text(x, y, label, { fontFamily: 'Georgia, serif', fontSize: '16px', color: '#e8c07a' })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(11);
+      disc.on('pointerdown', () => {
+        disc.setFillStyle(COLORS.buttonEdge, 0.5);
+        onDown();
+      });
+      const release = (): void => {
+        disc.setFillStyle(COLORS.button, 0.6);
+        onUp?.();
+      };
+      disc.on('pointerup', release);
+      disc.on('pointerout', release);
+    };
+    const right = VIEW.w - 62;
+    const low = VIEW.h - 96;
+    button(right, low, 'SWING', () => (this.swingHeld = true), () => (this.swingHeld = false));
+    button(right - 104, low + 28, 'EAT', () => (this.wantEat = true));
+    button(right - 208, low + 28, 'DROP', () => (this.wantDrop = true));
+
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
+      if (over.length > 0) return; // that press belongs to a button
+      if (pointer.rightButtonDown()) {
+        this.swingHeld = true;
+        return;
+      }
+      this.steer = pointer;
+      this.steerOrigin = { x: pointer.x, y: pointer.y };
+    });
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (pointer === this.steer) this.steer = null;
+      if (!pointer.wasTouch && !pointer.rightButtonDown()) this.swingHeld = false;
+    });
+  }
+
+  /** The direction the mouse or thumb is asking for, or null when neither is steering. */
+  private pointerDirection(): Point | null {
+    const pointer = this.steer;
+    const steering = pointer !== null && pointer.isDown;
+    const usingStick = steering && pointer.wasTouch;
+    this.stickBase.setVisible(usingStick);
+    this.stickKnob.setVisible(usingStick);
+    if (!steering) return null;
+
+    if (pointer.wasTouch) {
+      const dx = pointer.x - this.steerOrigin.x;
+      const dy = pointer.y - this.steerOrigin.y;
+      const len = Math.hypot(dx, dy);
+      const reach = Math.min(len, TOUCH.stickRadius);
+      this.stickBase.setPosition(this.steerOrigin.x, this.steerOrigin.y);
+      this.stickKnob.setPosition(
+        this.steerOrigin.x + (len ? (dx / len) * reach : 0),
+        this.steerOrigin.y + (len ? (dy / len) * reach : 0),
+      );
+      return len < TOUCH.deadZone ? { x: 0, y: 0 } : { x: dx / len, y: dy / len };
+    }
+
+    // Mouse: walk toward the cursor and stop on reaching it.
+    const at = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
+    const dx = at.x - this.player.x;
+    const dy = at.y - this.player.y;
+    const len = Math.hypot(dx, dy);
+    return len < 10 ? { x: 0, y: 0 } : { x: dx / len, y: dy / len };
   }
 
   // ---------------------------------------------------------------- loop
@@ -219,8 +322,13 @@ export class GameScene extends Phaser.Scene {
     this.player.setFillStyle(this.hurtFlash > 0 ? 0xff5040 : COLORS.player);
 
     if (this.playerStun <= 0) {
-      const dx = (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0);
-      const dy = (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0);
+      let dx = (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0);
+      let dy = (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0);
+      const pointing = this.pointerDirection();
+      if (dx === 0 && dy === 0 && pointing) {
+        dx = pointing.x;
+        dy = pointing.y;
+      }
       const len = Math.hypot(dx, dy) || 1;
       // A full sack is a heavy bindle: each item carried slows you a little.
       const speed = PLAYER.speed * (1 - 0.04 * this.sack.length);
@@ -238,9 +346,11 @@ export class GameScene extends Phaser.Scene {
       sfx.pickup();
     }
 
-    if (Phaser.Input.Keyboard.JustDown(k.E)) this.eat();
-    if (Phaser.Input.Keyboard.JustDown(k.Q)) this.dropFood();
-    if (k.SPACE.isDown && this.swingIn <= 0) this.swing();
+    if (Phaser.Input.Keyboard.JustDown(k.E) || this.wantEat) this.eat();
+    if (Phaser.Input.Keyboard.JustDown(k.Q) || this.wantDrop) this.dropFood();
+    this.wantEat = false;
+    this.wantDrop = false;
+    if ((k.SPACE.isDown || this.swingHeld) && this.swingIn <= 0) this.swing();
   }
 
   private eat(): void {
@@ -343,6 +453,7 @@ export class GameScene extends Phaser.Scene {
     const count = PANIC.firstHorde + PANIC.hordeGrowth * this.stats.panics;
     // They arrive in a stream, not all at once, so the brawl keeps getting fed.
     const gapMs = (PANIC.arrivalSec * 1000) / count;
+    this.stillToArrive = count;
     for (let i = 0; i < count; i++) this.time.delayedCall(i * gapMs, () => this.spawnHobo());
     this.time.delayedCall(PANIC.meleeSec * 1000, () => this.endPanic());
   }
@@ -354,6 +465,7 @@ export class GameScene extends Phaser.Scene {
     const x = side === 0 ? view.left - 40 : side === 1 ? view.right + 40 : Phaser.Math.Between(view.left, view.right);
     const y = side === 2 ? view.top - 40 : side === 3 ? view.bottom + 40 : Phaser.Math.Between(view.top, view.bottom);
 
+    this.stillToArrive--;
     const rect = this.add.rectangle(x, y, 22, 22, COLORS.hobo).setDepth(3);
     this.physics.add.existing(rect);
     this.hoboGroup.add(rect);
@@ -368,11 +480,14 @@ export class GameScene extends Phaser.Scene {
       thinkIn: 0,
       target: null,
       grudge: null,
+      looter: 0,
+      madAtPlayer: 0,
     });
   }
 
   /** The second whistle: whoever is still standing runs for the train. */
   private endPanic(): void {
+    if (this.state !== 'melee') return; // the whistle only blows once
     this.state = 'exit';
     sfx.whistle();
     for (const hobo of this.hobos) hobo.fleeing = !hobo.ko;
@@ -390,10 +505,21 @@ export class GameScene extends Phaser.Scene {
   // ---------------------------------------------------------------- hobos
 
   private updateHobos(dt: number): void {
+    // When the brawl has burned itself out, don't make the player wait for the clock.
+    if (this.state === 'melee' && this.stillToArrive <= 0) {
+      const standing = this.hobos.reduce((n, hobo) => n + (hobo.ko ? 0 : 1), 0);
+      if (standing <= PANIC.lastStanding) this.endPanic();
+    }
+
     for (const hobo of this.hobos) {
       if (hobo.ko) continue;
       hobo.cooldown -= dt;
       hobo.stun -= dt;
+      hobo.madAtPlayer -= dt;
+      if (hobo.looter > 0) {
+        hobo.looter -= dt;
+        if (hobo.looter <= 0) hobo.rect.setFillStyle(COLORS.hobo);
+      }
       if (hobo.stun > 0) continue;
 
       if (hobo.fleeing) {
@@ -427,21 +553,31 @@ export class GameScene extends Phaser.Scene {
     }
     if (bestItem) return { kind: 'item', item: bestItem };
 
-    // 3. The player, as long as the sack has anything in it.
-    if (this.sack.length > 0) return { kind: 'player' };
+    // 3. A hobo who just grabbed dropped food. Nobody likes a hobo with beans.
+    const looter = this.nearestHobo(hobo, 320, (other) => other.looter > 0);
+    if (looter) return { kind: 'hobo', hobo: looter };
 
-    // 4. Nothing worth taking, so pick a fight with the nearest hobo.
+    // 4. The player: always if he bonked you, otherwise only some of the time and only for his food.
+    if (hobo.madAtPlayer > 0) return { kind: 'player' };
+    if (this.sack.length > 0 && Math.random() < PANIC.playerFocus) return { kind: 'player' };
+
+    // 5. Otherwise pick a fight with the nearest hobo. The player is the last resort.
+    const nearest = this.nearestHobo(hobo, Infinity, () => true);
+    return nearest ? { kind: 'hobo', hobo: nearest } : { kind: 'player' };
+  }
+
+  private nearestHobo(from: Hobo, within: number, wanted: (other: Hobo) => boolean): Hobo | null {
     let nearest: Hobo | null = null;
-    let nearestDist = 260;
+    let nearestDist = within;
     for (const other of this.hobos) {
-      if (other === hobo || other.ko) continue;
-      const d = dist(hobo.rect, other.rect);
+      if (other === from || other.ko || !wanted(other)) continue;
+      const d = dist(from.rect, other.rect);
       if (d < nearestDist) {
         nearest = other;
         nearestDist = d;
       }
     }
-    return nearest ? { kind: 'hobo', hobo: nearest } : { kind: 'player' };
+    return nearest;
   }
 
   private actOnTarget(hobo: Hobo): void {
@@ -457,6 +593,8 @@ export class GameScene extends Phaser.Scene {
       if (dist(hobo.rect, target.item.rect) < 18) {
         this.removeItem(target.item); // gone in one bite
         sfx.munch();
+        hobo.looter = PANIC.lootEnvySec;
+        hobo.rect.setFillStyle(COLORS.hoboLooter);
       }
       return;
     }
@@ -481,6 +619,10 @@ export class GameScene extends Phaser.Scene {
     victim.stun = 0.25;
     victim.grudge = attacker;
     if (attacker) victim.target = { kind: 'hobo', hobo: attacker };
+    else {
+      victim.madAtPlayer = PANIC.madAtPlayerSec;
+      victim.target = { kind: 'player' };
+    }
     this.shove(victim.rect, from, 260);
     if (victim.hp > 0) return;
 
