@@ -281,6 +281,84 @@ export const ENVY = {
   crows: [0, 2, 5, 9],
 };
 
+/**
+ * What the world does as Envy climbs. Stages are ENVY.stages: 1 rising, 2 high, 3 critical.
+ * Each stage keeps everything from the stages below it.
+ */
+export const HINTS = {
+  /** Rising: a harmonica somewhere far off, every so many seconds in this range. */
+  farTuneMinSec: 20,
+  farTuneMaxSec: 40,
+  farTuneSec: 2.4,
+  /** High: lone hobos watching from the map's edge. */
+  watchers: 3,
+  /** Come this close and a watcher ducks off the edge. */
+  watcherShyRadius: 250,
+  /** He, or another, turns up somewhere else after this long. */
+  watcherBackMinSec: 8,
+  watcherBackMaxSec: 16,
+  /** High: chalk hobo signs, one more on a wall every so often, up to this many. */
+  chalkSigns: 5,
+  chalkEverySec: 3,
+  /** Critical: a dumpster rattles on its own every so many seconds in this range. */
+  rattleMinSec: 4,
+  rattleMaxSec: 9,
+  /** Critical: eyes blink in a boxcar doorway. */
+  eyesMinSec: 2,
+  eyesMaxSec: 5,
+  /** Critical: a townsperson mutters about drifters. */
+  townMutterMinSec: 3,
+  townMutterMaxSec: 6,
+  /** Critical: townsfolk drift up to the shopfronts, along this line. */
+  townHuddleY: 198,
+};
+
+export const TOWNSFOLK = {
+  count: 6,
+  strollSpeed: 45,
+  /** Their stretch of main street. */
+  streetTop: 220,
+  streetBottom: 310,
+  /** Above this much Stink they step back from you: from recoilMin pixels, up to recoilMax at full Stink. */
+  recoilFrom: 50,
+  recoilMin: 60,
+  recoilMax: 180,
+  recoilSpeed: 90,
+  /** Above this much Stink, one who steps back also says so. Each waits this long before saying it again. */
+  waveOffFrom: 80,
+  waveOffEverySec: 6,
+  /**
+   * The swarm. Stink held at its maximum this long, outside a Panic, and they warn you;
+   * warnSec later they come for you, and only the horse trough calls them off.
+   */
+  swarmFuseSec: 20,
+  swarmWarnSec: 5,
+  swarmSpeed: 150,
+  /** Health one blow takes. Nothing you wear blocks it. */
+  swarmDamage: 4,
+  swarmHitEverySec: 1,
+  swarmReach: 26,
+  /**
+   * The bum's rush. Every townsperson within pushReach shoves you toward the horse trough at
+   * pushSpeed, on top of your own walking, up to pushMax all told. Two of them beat you walking away.
+   */
+  pushReach: 42,
+  pushSpeed: 120,
+  pushMax: 320,
+  /** And every blow knocks you that way too, this hard. */
+  hitShove: 320,
+};
+
+/**
+ * A full belly mends you, at a cost. While Hunger is at least fullFrom, outside a Panic,
+ * Health comes back at perSec, and each point of it costs hungerPerHealth extra Hunger.
+ */
+export const HEALING = {
+  fullFrom: 80,
+  perSec: 2,
+  hungerPerHealth: 1,
+};
+
 export const PANIC = {
   /** Seconds of tramping feet between the whistle and the horde. */
   approachSec: 10,
@@ -358,8 +436,8 @@ export const DAY = {
 export const WARMTH = {
   max: 100,
   /** Lost per second at night, and per second in rain. Both at once add up. */
-  nightPerSec: 1.6,
-  rainPerSec: 2,
+  nightPerSec: 2.6,
+  rainPerSec: 3.5,
   /** Regained per second in dry daylight. */
   sunPerSec: 0.5,
   /** Regained per second beside a barrel fire, whatever the weather. */
@@ -476,4 +554,8 @@ export const COLORS = {
   trough: 0x4f7896,
   stink: 0x8a9a2a,
   fly: 0x0c0c0c,
+  chalk: 0xf0ece0,
+  smoke: 0x9a948a,
+  eyes: 0xf0d040,
+  shutter: 0x6a6660,
 };

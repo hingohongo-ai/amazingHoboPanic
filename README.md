@@ -12,6 +12,11 @@ This is the **gray-box prototype**: a flat top-down map with colored rectangles 
 | Red | The railyard dog |
 | Olive | Panic hobos (gray once flattened) |
 | Black, on the wire at the top | Crows. Watch the crows. |
+| Olive, alone at the map's edge | A lone hobo, watching. Get close and he ducks away. |
+| White marks on shopfronts and boxcars | Chalk hobo signs. Somebody has been leaving word. |
+| Gray puffs on the far right | Smoke from campfires that weren't there yesterday. |
+| Two yellow dots in a boxcar | Eyes. |
+| Slatted gray over the bright shopfront | The shopkeeper's shutter. No pie today. |
 | White, pacing the bright shopfront | The shopkeeper. Stand at his windowsill for a moment to lift the pie; it comes back every so often. |
 | Dark barrel with an orange flame | A barrel fire. Stand near it to warm up. |
 | Dark green box | A dumpster. Stand against it to dive in. |
@@ -60,6 +65,12 @@ Two things go in the sack and are not food. The harmonica gets a PLAY button: ne
 
 Take a piece that fell out of a flattened hobo and the next horde mutters about it. Dry newspaper in your shirt blocks a little too. A bindle hit can stagger you: for a second or two you cannot swing and your feet only half listen. The game-over screen says what killed you.
 
+A full belly mends you: while Hunger is near the top, Health comes back and Hunger goes faster. It does not work during a Panic.
+
+Townsfolk step back from a ripe hobo and tell him so. Keep Stink at its maximum for 20 seconds and they shout a warning, then swarm you and drive you into the horse trough. They hold you in the water until every last bit of Stink is gone. Nothing you wear stops them.
+
+As Envy climbs the town changes in stages: crows and a far-off harmonica, then watchers at the edge, chalk signs and smoke, then rattling dumpsters, eyes in the boxcars, muttering townsfolk and the shopkeeper's shutter. It all clears when the whistle blows; the shutter goes up once the Panic is over.
+
 Eating in private lowers Envy; eating where anyone can see raises it. Dropped food pulls the horde and the dog off you, and the hobo who grabs it becomes a target for the rest. On a phone, play in landscape.
 
 ## Develop
@@ -84,6 +95,13 @@ __game.scene.getScene('Game').takeGear({ kind: 'wear', wear: { ...see COATS in s
 __game.scene.getScene('Game').stagger = 2
 ```
 
+To see the hint stages without tripping a Panic (0.35 is Rising, 0.6 High, 0.85 Critical), or to be two seconds from a townsfolk swarm:
+
+```js
+g = __game.scene.getScene('Game'); g.envy.value = g.envy.threshold * 0.9
+g.stink = 100; g.ripeFor = 18
+```
+
 To start a shower, or to jump to dusk:
 
 ```js
@@ -100,7 +118,7 @@ Push to `master`. The GitHub Action builds the game and force-pushes `dist/` to 
 ```
 index.html              page shell and the link back to Skeletonbelly
 src/main.ts             Phaser setup
-src/config.ts           every tunable number (speeds, damage, Envy, Panic timings, day length, Warmth, Stink, sticks, sacks, coats)
+src/config.ts           every tunable number (speeds, damage, Envy, Panic timings, day length, Warmth, Stink, sticks, sacks, coats, hint stages, townsfolk, healing)
 src/envy.ts             the hidden Envy value that triggers a Panic
 src/sky.ts              the clock and the weather: day, night and rain
 src/audio.ts            placeholder whistle, footsteps, bonks and rain (Web Audio, no files)

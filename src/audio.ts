@@ -104,18 +104,26 @@ export function munch(): void {
   blip(180, 120, 0.15, 0.2, 'sawtooth');
 }
 
-/** A wheezy little tune, a note at a time. */
-export function harmonica(seconds: number): void {
+/** A wheezy little tune, a note at a time. Far off, it is quieter and muffled. */
+export function harmonica(seconds: number, far = false): void {
   if (!ctx) return;
-  const tune = [392, 440, 494, 392, 494, 523, 587, 494, 440, 392];
-  const step = 0.2;
+  const tune = far ? [330, 294, 262, 294, 330, 330, 330] : [392, 440, 494, 392, 494, 523, 587, 494, 440, 392];
+  const step = far ? 0.32 : 0.2;
+  let out: AudioNode = ctx.destination;
+  if (far) {
+    const muffle = ctx.createBiquadFilter();
+    muffle.type = 'lowpass';
+    muffle.frequency.value = 700;
+    muffle.connect(ctx.destination);
+    out = muffle;
+  }
   for (let i = 0; i * step < seconds; i++) {
     const at = ctx.currentTime + i * step;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(0.07, at + 0.03);
+    gain.gain.linearRampToValueAtTime(far ? 0.035 : 0.07, at + 0.03);
     gain.gain.linearRampToValueAtTime(0, at + step);
-    gain.connect(ctx.destination);
+    gain.connect(out);
     // Two reeds a hair apart is what makes it sound like a harmonica and not a doorbell.
     for (const detune of [0, 9]) {
       const osc = ctx.createOscillator();
@@ -160,7 +168,12 @@ export function rummage(): void {
   for (const delay of [0, 0.14, 0.3]) hiss(0.1, 500, 0.25, 'bandpass', delay);
 }
 
-let shower: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+/** A dumpster with something in it that isn't you. */
+export function rattle(): void {
+  for (const delay of [0, 0.07, 0.15, 0.21]) hiss(0.06, 2200, 0.12, 'bandpass', delay);
+}
+
+let shower:{ source: AudioBufferSourceNode; gain: GainNode } | null = null;
 
 /** Rain is one long loop of hiss that fades in and out. */
 export function rain(on: boolean): void {

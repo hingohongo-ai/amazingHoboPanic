@@ -9,6 +9,8 @@ import {
   GEAR,
   GEAR_FINDS,
   HARMONICA,
+  HEALING,
+  HINTS,
   ITEMS,
   NEWSPAPER,
   PANIC,
@@ -21,6 +23,7 @@ import {
   STICKS,
   STINK,
   TOUCH,
+  TOWNSFOLK,
   VIEW,
   WARMTH,
   WORLD,
@@ -108,7 +111,27 @@ interface Hobo {
 interface Townsperson {
   rect: Rect;
   turnIn: number;
+  /** Which way along the street he is strolling, in pixels a second. */
+  strollX: number;
+  /** His own line on main street, where he drifts back to. */
+  homeY: number;
+  /** Until this runs out he has already said what he thinks of the smell. */
+  waveIn: number;
+  /** Seconds until he can land another blow in a swarm. */
+  hitIn: number;
 }
+
+/** A lone hobo at the map's edge, watching. Shy: come close and he is gone. */
+interface Watcher {
+  rect: Rect;
+  /** True while he is off the edge, waiting to turn up somewhere else. */
+  out: boolean;
+  backIn: number;
+  /** Which way is off the map from where he stands. */
+  away: Point;
+}
+
+type HurtBy = 'bindle' | 'dog' | 'townsfolk';
 
 interface Dumpster {
   rect: Rect;
@@ -158,6 +181,10 @@ const DUMPSTER_SPOTS: Point[] = [
   { x: 760, y: 1250 }, // the yard
 ];
 const TROUGH: Point = { x: 640, y: 292 };
+const BOXCAR_XS = [420, 980, 1500];
+const BOXCAR_Y = 1010;
+/** Where the extra campfire smoke rises, out past the outskirts. */
+const SMOKE: Point = { x: WORLD.w - 50, y: 520 };
 
 export class GameScene extends Phaser.Scene {
   private player!: Rect;
@@ -201,7 +228,31 @@ export class GameScene extends Phaser.Scene {
   private mutters: string[] = [];
   private mutterIn = 0;
   /** Set only when a hit, not a slow drain, is what finished the player. */
-  private killedBy: 'bindle' | 'dog' | null = null;
+  private killedBy: HurtBy | null = null;
+  /** True while a full belly is mending you. */
+  private healing = false;
+
+  // The build-up: what the world does as Envy climbs.
+  private watchers: Watcher[] = [];
+  private chalk: Phaser.GameObjects.Graphics[] = [];
+  private chalkShown = 0;
+  private chalkIn = 0;
+  private smoke: Phaser.GameObjects.Arc[] = [];
+  private smokeOn = false;
+  private shutter!: Phaser.GameObjects.Graphics;
+  private shuttered = false;
+  private farTuneIn = 0;
+  private rattleIn = 0;
+  private eyesIn = 0;
+  private townMutterIn = 0;
+
+  // The townsfolk swarm: too ripe for too long and decent folk take matters into their own hands.
+  private ripeFor = 0;
+  private swarm: 'none' | 'warn' | 'on' = 'none';
+  private swarmIn = 0;
+  private swarmTalkIn = 0;
+  /** Stops the whole street saying "Pee-yew" in the same second. */
+  private townTalkIn = 0;
 
   private envy = new Envy();
   private state: PanicState = 'calm';
@@ -300,6 +351,23 @@ export class GameScene extends Phaser.Scene {
     this.mutters = [];
     this.mutterIn = 0;
     this.killedBy = null;
+    this.healing = false;
+    this.watchers = [];
+    this.chalk = [];
+    this.chalkShown = 0;
+    this.chalkIn = 0;
+    this.smoke = [];
+    this.smokeOn = false;
+    this.shuttered = false;
+    this.farTuneIn = 0;
+    this.rattleIn = 0;
+    this.eyesIn = 0;
+    this.townMutterIn = 0;
+    this.ripeFor = 0;
+    this.swarm = 'none';
+    this.swarmIn = 0;
+    this.swarmTalkIn = 0;
+    this.townTalkIn = 0;
     this.stillToArrive = 0;
     this.steer = null;
     this.swingHeld = false;
@@ -351,10 +419,40 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0.5)
       .setDepth(5)
       .setScale(0, 1);
+    // The shutter he pulls down when the town can feel trouble coming. It rolls down over the sill too.
+    const shutterH = SHOP.h + 26;
+    this.shutter = this.add
+      .graphics({ x: KEEPER_SHOP_X - SHOP.w / 2, y: SHOP.y - SHOP.h / 2 })
+      .fillStyle(COLORS.shutter)
+      .fillRect(0, 0, SHOP.w, shutterH)
+      .lineStyle(2, COLORS.rail)
+      .strokeRect(0, 0, SHOP.w, shutterH)
+      .setDepth(2.2)
+      .setScale(1, 0);
+    for (let y = 12; y < shutterH; y += 12) this.shutter.lineBetween(0, y, SHOP.w, y); // the slats
     // A few boxcars parked in the yard.
-    for (const x of [420, 980, 1500]) {
-      const car = this.add.rectangle(x, 1010, 220, 60, COLORS.rail);
+    for (const x of BOXCAR_XS) {
+      const car = this.add.rectangle(x, BOXCAR_Y, 220, 60, COLORS.rail);
       this.walls.add(car);
+    }
+
+    // Chalk hobo signs, hidden until the High hint stage: on the shopfronts and the boxcars.
+    const chalkSpots: Point[] = [];
+    for (let i = 0; i < 6; i++) {
+      if (i === SHOPKEEPER.shop) continue; // the shutter would cover them
+      for (const dx of [-55, 55]) chalkSpots.push({ x: SHOP.firstX + i * SHOP.gap + dx, y: SHOP.y + 25 });
+    }
+    for (const x of BOXCAR_XS) for (const dx of [-70, 70]) chalkSpots.push({ x: x + dx, y: BOXCAR_Y });
+    chalkSpots.forEach((spot, i) => {
+      const sign = this.add.graphics({ x: spot.x, y: spot.y }).setDepth(1.5).setAlpha(0).setVisible(false);
+      this.drawSign(sign, i);
+      this.chalk.push(sign);
+    });
+    Phaser.Utils.Array.Shuffle(this.chalk);
+
+    // Smoke from campfires that weren't there yesterday.
+    for (let i = 0; i < 7; i++) {
+      this.smoke.push(this.add.circle(SMOKE.x, SMOKE.y, 12, COLORS.smoke, 1).setDepth(2.5).setVisible(false));
     }
 
     for (const spot of DUMPSTER_SPOTS) {
@@ -403,13 +501,14 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.collider(this.player, this.walls);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
 
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < TOWNSFOLK.count; i++) {
+      const homeY = Phaser.Math.Between(TOWNSFOLK.streetTop, TOWNSFOLK.streetBottom);
       const rect = this.add
-        .rectangle(Phaser.Math.Between(80, WORLD.w - 80), Phaser.Math.Between(220, 310), 20, 24, COLORS.townsfolk)
+        .rectangle(Phaser.Math.Between(80, WORLD.w - 80), homeY, 20, 24, COLORS.townsfolk)
         .setDepth(3);
       this.physics.add.existing(rect);
       bodyOf(rect).setCollideWorldBounds(true);
-      this.townsfolk.push({ rect, turnIn: 0 });
+      this.townsfolk.push({ rect, turnIn: 0, strollX: 0, homeY, waveIn: 0, hitIn: 0 });
     }
 
     const home = { x: 1200, y: 1180 };
@@ -570,6 +669,8 @@ export class GameScene extends Phaser.Scene {
     this.updateDumpsters(dt);
     this.updateGear(dt);
     this.updateEnvy(dt);
+    this.updateHints(dt);
+    this.updateSwarm(dt);
     this.updateTownsfolk(dt);
     this.updateKeeper(dt);
     this.updateDog(dt);
@@ -811,11 +912,11 @@ export class GameScene extends Phaser.Scene {
     if (hit) sfx.bonk();
   }
 
-  private hurtPlayer(amount: number, from: Point, by: 'bindle' | 'dog'): void {
+  private hurtPlayer(amount: number, from: Point, by: HurtBy, knock = 240): void {
     // A moment of mercy after each hit, so a crowd can't land ten blows in one frame.
     if (this.safeFor > 0 || this.health <= 0) return;
     this.safeFor = PLAYER.mercySec;
-    // Coats, cans and newspaper stop bindles. Nothing stops the dog.
+    // Coats, cans and newspaper stop bindles. Nothing stops the dog, or decent folk.
     this.health -= by === 'bindle' ? amount * (1 - this.block) : amount;
     if (this.health <= 0) this.killedBy = by;
     this.hurtFlash = 0.12;
@@ -832,7 +933,7 @@ export class GameScene extends Phaser.Scene {
       this.say(this.player.x, this.player.y - 24, pick(['Oof!', 'Stars!', 'Who turned the town?', 'Whoa, Nelly.']));
       return;
     }
-    this.shove(this.player, from, 240);
+    this.shove(this.player, from, knock);
   }
 
   /** One line for the game-over screen, so the play-tester knows which system did the killing. */
@@ -844,6 +945,7 @@ export class GameScene extends Phaser.Scene {
       return 'Bonked into the hereafter by a fellow hobo.';
     }
     if (this.killedBy === 'dog') return 'Seen off for good by the railyard dog.';
+    if (this.killedBy === 'townsfolk') return 'Run out of this world by decent townsfolk. A bath would have saved him.';
     const starving = this.hunger <= 0;
     const freezing = this.warmth <= 0;
     if (starving && freezing) return 'Starved and froze at the same time. Thorough.';
@@ -864,6 +966,14 @@ export class GameScene extends Phaser.Scene {
   private updateNeeds(dt: number): void {
     this.hunger = Math.max(0, this.hunger - PLAYER.hungerPerSec * dt);
     if (this.hunger <= 0) this.health -= PLAYER.starvePerSec * dt;
+    // A full belly mends you, and the mending eats into it. Not in a Panic: no time to digest.
+    this.healing =
+      this.state === 'calm' && this.hunger >= HEALING.fullFrom && this.health > 0 && this.health < PLAYER.maxHealth;
+    if (this.healing) {
+      const mend = Math.min(HEALING.perSec * dt, PLAYER.maxHealth - this.health);
+      this.health += mend;
+      this.hunger = Math.max(0, this.hunger - mend * HEALING.hungerPerHealth);
+    }
 
     // Warmth: a fire always wins; otherwise night and rain take it and dry daylight gives it back.
     const cold =
@@ -1114,21 +1224,272 @@ export class GameScene extends Phaser.Scene {
     if (this.envy.tripped) this.startPanic();
   }
 
-  /** The only warning the player gets: crows gather on the wire and the light goes flat. */
+  /**
+   * The only warning the player gets. Each stage keeps what the one below it switched on.
+   * Rising: crows and a far-off harmonica. High: watchers, chalk signs and smoke.
+   * Critical: rattling bins, eyes in the boxcars, muttering townsfolk and the shutter.
+   */
   private showHints(stage: number): void {
     if (stage === this.shownStage) return;
+    const was = this.shownStage;
     this.shownStage = stage;
     const crowCount = ENVY.crows[stage] ?? 0;
     this.crows.forEach((crow, i) => crow.setVisible(i < crowCount));
     this.tweens.add({ targets: this.gloom, fillAlpha: [0, 0, 0.07, 0.16][stage] ?? 0, duration: 1500 });
+
+    if (stage >= 1 && was < 1) this.farTuneIn = Phaser.Math.FloatBetween(3, 8);
+    if (stage >= 2 && was < 2) {
+      this.spawnWatchers();
+      this.chalkIn = 0.5;
+      this.setSmoke(true);
+    }
+    if (stage < 2 && was >= 2) this.clearHighHints();
+    if (stage >= 3 && was < 3) {
+      this.setShutter(true);
+      this.rattleIn = 2;
+      this.eyesIn = 1.5;
+      this.townMutterIn = 1;
+    }
+    if (stage < 3 && this.shuttered) this.setShutter(false);
+  }
+
+  private updateHints(dt: number): void {
+    if (this.state !== 'calm') return;
+    const stage = this.shownStage;
+
+    if (stage >= 1) {
+      this.farTuneIn -= dt;
+      if (this.farTuneIn <= 0) {
+        this.farTuneIn = Phaser.Math.FloatBetween(HINTS.farTuneMinSec, HINTS.farTuneMaxSec);
+        sfx.harmonica(HINTS.farTuneSec, true);
+        this.farNote();
+      }
+    }
+
+    if (stage >= 2) {
+      for (const w of this.watchers) {
+        if (w.out) {
+          w.backIn -= dt;
+          if (w.backIn <= 0) this.placeWatcher(w);
+          continue;
+        }
+        w.rect.setAngle(Math.sin(this.time.now / 700 + w.rect.x) * 4);
+        if (dist(w.rect, this.player) < HINTS.watcherShyRadius) this.duckWatcher(w);
+      }
+      this.chalkIn -= dt;
+      if (this.chalkIn <= 0 && this.chalkShown < Math.min(HINTS.chalkSigns, this.chalk.length)) {
+        this.chalkIn = HINTS.chalkEverySec;
+        const sign = this.chalk[this.chalkShown++];
+        sign.setVisible(true).setAlpha(0);
+        this.tweens.add({ targets: sign, alpha: 0.85, duration: 1200 });
+      }
+    }
+
+    if (stage >= 3) {
+      this.rattleIn -= dt;
+      if (this.rattleIn <= 0) {
+        this.rattleIn = Phaser.Math.FloatBetween(HINTS.rattleMinSec, HINTS.rattleMaxSec);
+        this.rattleBin(pick(this.dumpsters));
+      }
+      this.eyesIn -= dt;
+      if (this.eyesIn <= 0) {
+        this.eyesIn = Phaser.Math.FloatBetween(HINTS.eyesMinSec, HINTS.eyesMaxSec);
+        this.blinkEyes();
+      }
+      this.townMutterIn -= dt;
+      if (this.townMutterIn <= 0) {
+        this.townMutterIn = Phaser.Math.FloatBetween(HINTS.townMutterMinSec, HINTS.townMutterMaxSec);
+        const near = this.townsfolk.filter((t) => t.rect.visible && dist(t.rect, this.player) < 520);
+        if (near.length > 0 && this.swarm === 'none') {
+          const t = pick(near);
+          this.say(
+            t.rect.x,
+            t.rect.y - 22,
+            pick(['drifters...', 'lock up, Martha', 'more of em every day...', "I don't like it", 'bolt the door, Harold']),
+          );
+        }
+      }
+    }
+  }
+
+  /** The far-off harmonica, for anyone playing with the sound off: a note drifting in at the screen's edge. */
+  private farNote(): void {
+    const x = pick([28, VIEW.w - 28]);
+    const y = Phaser.Math.Between(90, 220);
+    const note = this.add
+      .text(x, y, '♪', { fontFamily: 'Georgia, serif', fontSize: '18px', color: '#f0e6cc' })
+      .setOrigin(0.5)
+      .setAlpha(0.55)
+      .setScrollFactor(0)
+      .setDepth(9);
+    this.tweens.add({ targets: note, y: y - 40, alpha: 0, duration: HINTS.farTuneSec * 1000, onComplete: () => note.destroy() });
+  }
+
+  private spawnWatchers(): void {
+    for (let i = 0; i < HINTS.watchers; i++) {
+      const rect = this.add.rectangle(0, 0, 22, 22, COLORS.hobo).setDepth(3).setVisible(false);
+      // They turn up one at a time, a moment apart.
+      this.watchers.push({ rect, out: true, backIn: 0.3 + i * 2, away: { x: 0, y: 1 } });
+    }
+  }
+
+  /** Somewhere on the left, right or bottom edge of the map, close enough to be seen, not close enough to talk to. */
+  private placeWatcher(w: Watcher): void {
+    const edgeSpot = (): Point => {
+      const side = Phaser.Math.Between(0, 2);
+      if (side === 0) return { x: 14, y: Phaser.Math.Between(360, 920) };
+      if (side === 1) return { x: WORLD.w - 14, y: Phaser.Math.Between(360, 920) };
+      return { x: Phaser.Math.Between(80, WORLD.w - 80), y: WORLD.h - 14 };
+    };
+    let spot = edgeSpot();
+    for (let tries = 0; tries < 12; tries++) {
+      const d = dist(spot, this.player);
+      if (d > HINTS.watcherShyRadius + 60 && d < 750) break;
+      spot = edgeSpot();
+    }
+    if (dist(spot, this.player) < HINTS.watcherShyRadius + 20) {
+      w.backIn = 2; // nowhere good to stand; try again in a moment
+      return;
+    }
+    w.away = spot.x < 30 ? { x: -1, y: 0 } : spot.x > WORLD.w - 30 ? { x: 1, y: 0 } : { x: 0, y: 1 };
+    w.out = false;
+    w.rect.setPosition(spot.x, spot.y).setVisible(true).setAlpha(0).setAngle(0);
+    this.tweens.add({ targets: w.rect, alpha: 1, duration: 800 });
+  }
+
+  private duckWatcher(w: Watcher): void {
+    w.out = true;
+    w.backIn = Phaser.Math.FloatBetween(HINTS.watcherBackMinSec, HINTS.watcherBackMaxSec);
+    this.tweens.killTweensOf(w.rect);
+    this.tweens.add({
+      targets: w.rect,
+      x: w.rect.x + w.away.x * 40,
+      y: w.rect.y + w.away.y * 40,
+      alpha: 0,
+      duration: 350,
+      onComplete: () => w.rect.setVisible(false),
+    });
+  }
+
+  /** Watchers gone, chalk washed off, the smoke dies down. */
+  private clearHighHints(): void {
+    for (const w of this.watchers) {
+      this.tweens.killTweensOf(w.rect);
+      w.rect.destroy();
+    }
+    this.watchers = [];
+    for (const sign of this.chalk) {
+      this.tweens.killTweensOf(sign);
+      sign.setVisible(false).setAlpha(0);
+    }
+    this.chalkShown = 0;
+    Phaser.Utils.Array.Shuffle(this.chalk);
+    this.setSmoke(false);
+  }
+
+  /** A handful of real hobo signs, near enough, in chalk. */
+  private drawSign(g: Phaser.GameObjects.Graphics, kind: number): void {
+    g.lineStyle(2, COLORS.chalk, 1);
+    switch (kind % 5) {
+      case 0: // a circle with a cross: good for a handout
+        g.strokeCircle(0, 0, 8);
+        g.lineBetween(-6, -6, 6, 6);
+        g.lineBetween(-6, 6, 6, -6);
+        break;
+      case 1: // a triangle: watch yourself
+        g.strokeTriangle(-8, 7, 8, 7, 0, -8);
+        break;
+      case 2: // a zigzag: a dog that bites
+        g.beginPath();
+        g.moveTo(-10, 4);
+        g.lineTo(-5, -5);
+        g.lineTo(0, 4);
+        g.lineTo(5, -5);
+        g.lineTo(10, 4);
+        g.strokePath();
+        break;
+      case 3: // a top hat: a rich man lives here
+        g.strokeRect(-5, -10, 10, 10);
+        g.lineBetween(-10, 0, 10, 0);
+        break;
+      default: // two lines and a circle: there are a lot of us about
+        g.lineBetween(-9, -3, 9, -3);
+        g.lineBetween(-9, 4, 9, 4);
+        g.strokeCircle(0, -10, 3);
+    }
+  }
+
+  private setSmoke(on: boolean): void {
+    if (on === this.smokeOn) return;
+    this.smokeOn = on;
+    this.smoke.forEach((puff, i) => {
+      this.tweens.killTweensOf(puff);
+      puff.setVisible(on);
+      if (!on) return;
+      puff.setPosition(SMOKE.x, SMOKE.y).setAlpha(0).setScale(0.6);
+      this.tweens.add({
+        targets: puff,
+        x: SMOKE.x + 24,
+        y: SMOKE.y - 170,
+        alpha: { from: 0.45, to: 0 },
+        scale: { from: 0.6, to: 1.8 },
+        duration: 3200,
+        delay: i * 460,
+        repeat: -1,
+      });
+    });
+  }
+
+  /** The shopkeeper shuts up shop: no pie until the trouble has been and gone. */
+  private setShutter(down: boolean): void {
+    if (down === this.shuttered) return;
+    this.shuttered = down;
+    this.tweens.killTweensOf(this.shutter);
+    this.tweens.add({
+      targets: this.shutter,
+      scaleY: down ? 1 : 0,
+      duration: down ? 900 : 1200,
+      ease: down ? 'Bounce.easeOut' : 'Sine.easeInOut',
+    });
+    if (!down) return;
+    sfx.rattle();
+    if (this.keeper.rect.visible) {
+      this.say(this.keeper.rect.x, this.keeper.rect.y - 24, pick(["We're CLOSED.", 'Not today.', 'Lock up, lock up!']));
+    }
+  }
+
+  /** Something in that dumpster, and it isn't you. */
+  private rattleBin(bin: Dumpster): void {
+    const x = bin.rect.x;
+    this.tweens.add({
+      targets: bin.rect,
+      x: x + 3,
+      duration: 45,
+      yoyo: true,
+      repeat: 4,
+      onComplete: () => bin.rect.setX(x),
+    });
+    if (dist(bin.rect, this.player) < 700) sfx.rattle();
+  }
+
+  /** Two eyes in a dark boxcar doorway. They blink once and they're gone. */
+  private blinkEyes(): void {
+    const x = pick(BOXCAR_XS) + Phaser.Math.Between(-80, 80);
+    const y = BOXCAR_Y - 4;
+    // Above the night tint, like the fires, so they show best after dark.
+    const eyes = [-5, 5].map((dx) => this.add.rectangle(x + dx, y, 4, 3, COLORS.eyes).setDepth(7.6));
+    this.time.delayedCall(700, () => eyes.forEach((e) => e.setAlpha(0)));
+    this.time.delayedCall(820, () => eyes.forEach((e) => e.setAlpha(1)));
+    this.time.delayedCall(1500, () => eyes.forEach((e) => e.destroy()));
   }
 
   private startPanic(): void {
     this.state = 'approach';
     sfx.whistle();
     sfx.footsteps(PANIC.approachSec);
-    // The crows know. They leave.
+    // The crows know. They leave. So does everyone else; only the shutter stays down.
     this.crows.forEach((crow) => crow.setVisible(false));
+    this.clearHighHints();
     for (const t of this.townsfolk) {
       t.rect.setVisible(false);
       bodyOf(t.rect).setVelocity(0, 0);
@@ -1414,15 +1775,146 @@ export class GameScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- townsfolk and the dog
 
+  /**
+   * Townsfolk stroll their stretch of main street. A ripe hobo makes them step back, a very ripe one
+   * gets told so, and at the Critical hint stage they edge up to the shopfronts. In a swarm they
+   * come for you.
+   */
   private updateTownsfolk(dt: number): void {
+    this.townTalkIn -= dt;
+    const stage = this.state === 'calm' ? this.shownStage : 0;
+    const over = Phaser.Math.Clamp((this.stink - TOWNSFOLK.recoilFrom) / (STINK.max - TOWNSFOLK.recoilFrom), 0, 1);
+    const recoil = this.stink >= TOWNSFOLK.recoilFrom ? TOWNSFOLK.recoilMin + (TOWNSFOLK.recoilMax - TOWNSFOLK.recoilMin) * over : 0;
+    const top = Math.min(TOWNSFOLK.streetTop, HINTS.townHuddleY);
+    // In a swarm they come at you from the side away from the trough, and drive you into it.
+    const toTrough = Phaser.Math.Angle.Between(this.player.x, this.player.y, TROUGH.x, TROUGH.y);
+    const behind: Point = {
+      x: this.player.x - Math.cos(toTrough) * 16,
+      y: this.player.y - Math.sin(toTrough) * 16,
+    };
+    let pushers = 0;
+
     for (const t of this.townsfolk) {
       if (!t.rect.visible) continue;
+      const body = bodyOf(t.rect);
       t.turnIn -= dt;
-      if (t.turnIn > 0) continue;
-      t.turnIn = Phaser.Math.FloatBetween(1.5, 4);
-      const stroll = Phaser.Math.Between(-1, 1) * 45;
-      bodyOf(t.rect).setVelocity(stroll, 0);
+      t.waveIn -= dt;
+      t.hitIn -= dt;
+      const d = dist(t.rect, this.player);
+
+      if (this.swarm === 'on') {
+        this.moveToward(t.rect, d > 60 ? this.player : behind, TOWNSFOLK.swarmSpeed);
+        if (d < TOWNSFOLK.pushReach) pushers++;
+        // In the trough they stop hitting and hold him there: a blow could knock him out of the water.
+        if (d < TOWNSFOLK.swarmReach && t.hitIn <= 0 && !this.bathing) {
+          t.hitIn = TOWNSFOLK.swarmHitEverySec;
+          // The blow lands from behind, so it knocks you trough-ward whichever side he is on.
+          this.hurtPlayer(TOWNSFOLK.swarmDamage, behind, 'townsfolk', TOWNSFOLK.hitShove);
+        }
+        continue;
+      }
+      if (this.swarm === 'warn') {
+        body.setVelocity(0, 0); // they stop and stare
+        continue;
+      }
+
+      if (d < recoil) {
+        const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, t.rect.x, t.rect.y);
+        let vy = Math.sin(angle) * TOWNSFOLK.recoilSpeed;
+        // Back away along the street; don't wander off it.
+        if ((t.rect.y <= top && vy < 0) || (t.rect.y >= TOWNSFOLK.streetBottom && vy > 0)) vy = 0;
+        body.setVelocity(Math.cos(angle) * TOWNSFOLK.recoilSpeed, vy);
+        t.turnIn = 0.4;
+        if (this.stink >= TOWNSFOLK.waveOffFrom && t.waveIn <= 0 && this.townTalkIn <= 0) {
+          t.waveIn = TOWNSFOLK.waveOffEverySec;
+          this.townTalkIn = 1.5;
+          this.say(t.rect.x, t.rect.y - 22, pick(['Pee-yew!', 'Shoo!', 'Mercy, the SMELL.', 'Mind the children.']));
+        }
+        continue;
+      }
+
+      if (t.turnIn <= 0) {
+        t.turnIn = Phaser.Math.FloatBetween(1.5, 4);
+        t.strollX = Phaser.Math.Between(-1, 1) * TOWNSFOLK.strollSpeed;
+      }
+      // Drift back to his own line, or, when trouble is close, up to the shopfronts.
+      const wantY = stage >= 3 ? HINTS.townHuddleY : t.homeY;
+      const dy = wantY - t.rect.y;
+      const far = Math.abs(dy) > 60; // after a swarm he could be anywhere
+      const vy = Math.abs(dy) < 3 ? 0 : Math.sign(dy) * Math.min(TOWNSFOLK.strollSpeed * (far ? 2.5 : 1), Math.abs(dy) * 2);
+      body.setVelocity(far ? 0 : t.strollX, vy);
     }
+
+    // The bum's rush: hands on your back, on top of whatever your feet are doing.
+    // (Not while he is reeling from a blow: the blow itself is already sending him that way.)
+    // Once he is in, they hold him near the middle of the trough rather than shove him through it.
+    const offCentre = dist(this.player, TROUGH);
+    if (pushers > 0 && this.playerStun <= 0 && offCentre > 6) {
+      const push = Math.min(TOWNSFOLK.pushMax, pushers * TOWNSFOLK.pushSpeed, this.bathing ? offCentre * 8 : Infinity);
+      const body = bodyOf(this.player);
+      body.setVelocity(body.velocity.x + Math.cos(toTrough) * push, body.velocity.y + Math.sin(toTrough) * push);
+      if (this.nagIn <= 0 && !this.bathing) {
+        this.nagIn = 2.5;
+        this.say(this.player.x, this.player.y - 24, pick(['Hey! HEY!', 'I can walk!', 'Unhand me!', 'Not the trough!']));
+      }
+    }
+  }
+
+  /** Full Stink for too long and the town loses patience. Only the horse trough calls them off. */
+  private updateSwarm(dt: number): void {
+    if (this.state !== 'calm') {
+      this.swarm = 'none'; // a Panic sends everyone indoors
+      this.ripeFor = 0;
+      return;
+    }
+    this.swarmTalkIn -= dt;
+    if (this.swarm === 'none') {
+      this.ripeFor = this.stink >= STINK.max - 0.01 ? this.ripeFor + dt : 0;
+      if (this.ripeFor >= TOWNSFOLK.swarmFuseSec) {
+        this.swarm = 'warn';
+        this.swarmIn = TOWNSFOLK.swarmWarnSec;
+        this.townShout(pick(['SOMEBODY FETCH A BUCKET!', 'THAT DOES IT!', 'I can SMELL him from here!']));
+      }
+      return;
+    }
+    // They don't let go until he is clean. Not cleaner: clean.
+    if (this.stink <= 0) {
+      this.swarm = 'none';
+      this.ripeFor = 0;
+      this.townShout(pick(['And STAY clean!', 'That will do.', 'Much obliged.']));
+      return;
+    }
+    if (this.swarm === 'warn') {
+      this.swarmIn -= dt;
+      if (this.swarmIn <= 0) {
+        this.swarm = 'on';
+        this.swarmTalkIn = 2.5;
+        this.townShout(pick(['GET HIM!', 'RUN HIM OUT!', 'INTO THE TROUGH WITH HIM!']));
+      }
+      return;
+    }
+    if (this.swarmTalkIn <= 0) {
+      this.swarmTalkIn = Phaser.Math.FloatBetween(this.bathing ? 0.8 : 2, this.bathing ? 1.4 : 4);
+      this.townShout(
+        this.bathing
+          ? pick(['SCRUB!', 'Behind the ears!', 'Again!', 'Hold him under!', 'Not done yet!'])
+          : pick(['Filthy!', 'Get in the trough!', 'Not on MY street!', 'Somebody hold my nose!', 'Phew!']),
+      );
+    }
+  }
+
+  /**
+   * A shout from the nearest townsperson. If he is off screen the words still show, at the
+   * edge of the screen on his side, so the player knows trouble is coming and from where.
+   */
+  private townShout(words: string): void {
+    const shown = this.townsfolk.filter((t) => t.rect.visible);
+    if (shown.length === 0) return;
+    const t = shown.reduce((a, b) => (dist(a.rect, this.player) <= dist(b.rect, this.player) ? a : b));
+    const view = this.cameras.main.worldView;
+    const x = Phaser.Math.Clamp(t.rect.x, view.left + 110, view.right - 110);
+    const y = Phaser.Math.Clamp(t.rect.y - 24, view.top + 90, view.bottom - 40);
+    this.say(x, y, words);
   }
 
   /**
@@ -1435,7 +1927,11 @@ export class GameScene extends Phaser.Scene {
     keeper.broomIn -= dt;
 
     // The pie on the sill takes a moment to lift, and a broom in the ribs starts you over.
-    if (!this.pieOut) {
+    // Behind the shutter it can't be got at, and no new one goes out.
+    if (this.shuttered) {
+      this.pieDwell = 0;
+      this.pieBar.setScale(0, 1);
+    } else if (!this.pieOut) {
       this.pieIn -= dt;
       if (this.pieIn <= 0) {
         this.pieOut = true;
@@ -1459,8 +1955,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // When the whistle blows he goes inside and bolts the door.
-    if (this.state !== 'calm') {
+    // When the whistle blows, or the shutter comes down, he goes inside and bolts the door.
+    if (this.state !== 'calm' || this.shuttered) {
       keeper.rect.setVisible(false);
       keeper.chasing = 0;
       body.enable = false;
@@ -1633,7 +2129,7 @@ export class GameScene extends Phaser.Scene {
     const worn = this.wear.coat;
     const coat = !worn ? 'none' : worn.blockPerCan ? `${worn.name} (${this.cans} cans)` : worn.name;
     this.hud.setText(
-      `Day ${this.sky.day}   Health ${bar(this.health, PLAYER.maxHealth)}   ` +
+      `Day ${this.sky.day}   Health ${bar(this.health, PLAYER.maxHealth)}${this.healing ? ' +mending' : ''}   ` +
         `Hunger ${bar(this.hunger, PLAYER.maxHunger)}   Warmth ${bar(this.warmth, WARMTH.max)}` +
         `${this.padding > 0 ? ' +paper' : ''}\n` +
         `Sack (${SACKS[this.sackTier].name}) ${this.sack.length}/${this.sackSlots}: ${sack}\n` +
