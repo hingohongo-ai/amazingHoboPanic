@@ -25,19 +25,19 @@ const clock = (seconds: number): string =>
   `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
 export class GameOverScene extends Phaser.Scene {
-  private stats: RunStats = { seconds: 0, panics: 0, bonked: 0, eaten: 0 };
+  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
 
   constructor() {
     super('GameOver');
   }
 
   init(data: Partial<RunStats>): void {
-    this.stats = { seconds: 0, panics: 0, bonked: 0, eaten: 0, ...data };
+    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, ...data };
   }
 
   create(): void {
     showHome(true);
-    const { seconds, panics, bonked, eaten } = this.stats;
+    const { seconds, days, panics, bonked, eaten } = this.stats;
     const best = readBest();
     const isBest = seconds > best;
     if (isBest) writeBest(seconds);
@@ -51,8 +51,9 @@ export class GameOverScene extends Phaser.Scene {
         cx,
         310,
         [
-          `Survived        ${clock(seconds)}${isBest ? '   (new best)' : ''}`,
-          `Best            ${clock(Math.max(best, seconds))}`,
+          `Days survived   ${days}`,
+          `Time on the bum ${clock(seconds)}${isBest ? '   (new best)' : ''}`,
+          `Best time       ${clock(Math.max(best, seconds))}`,
           `Panics survived ${panics}`,
           `Hobos bonked    ${bonked}`,
           `Things eaten    ${eaten}`,

@@ -24,14 +24,16 @@ export class TitleScene extends Phaser.Scene {
     this.add
       .text(
         cx,
-        350,
+        362,
         [
           'Move: hold the mouse or a thumb on the field, or WASD / arrows',
           'Swing your bindle: SWING button, right-click or Space',
           'Eat from your sack: EAT button or E   (mind who is watching)',
           'Drop food: DROP button or Q',
+          'Search a dumpster: stand against it',
           '',
-          'Stay fed. Stay out of the railyard dog\'s way.',
+          'Stay fed. Stay warm after dark: find a barrel fire or some newspaper.',
+          'The horse trough is there if you care how you smell.',
           'Do not get too comfortable.',
         ].join('\n'),
         { fontFamily: 'monospace', fontSize: '16px', color: '#d8ccb0', align: 'center', lineSpacing: 6 },

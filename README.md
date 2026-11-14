@@ -12,6 +12,12 @@ This is the **gray-box prototype**: a flat top-down map with colored rectangles 
 | Red | The railyard dog |
 | Olive | Panic hobos (gray once flattened) |
 | Black, on the wire at the top | Crows. Watch the crows. |
+| White, pacing the bright shopfront | The shopkeeper. Stand at his windowsill for a moment to lift the pie; it comes back every so often. |
+| Dark barrel with an orange flame | A barrel fire. Stand near it to warm up. |
+| Dark green box | A dumpster. Stand against it to dive in. |
+| Blue box on main street | The horse trough. Stand in it to wash. |
+| Pale gray (small) | Newspaper. It goes in your shirt, not your sack. |
+| Green haze and flies around you | Your Stink. There is no meter. |
 
 ## Controls
 
@@ -21,6 +27,12 @@ This is the **gray-box prototype**: a flat top-down map with colored rectangles 
 | Swing the bindle | SWING button or right-click | SWING button | Space |
 | Eat from the sack | EAT button | EAT button | E |
 | Drop food | DROP button | DROP button | Q |
+
+## Survival
+
+A day lasts three minutes and the last minute is night. Night and rain drain Warmth: low Warmth slows you, and no Warmth drains Health. Barrel fires warm you, dry daylight slowly does too, and newspaper soaks up cold until rain ruins it.
+
+Stink rises on its own, jumps with every dumpster dive, and beans add a little more. The shopkeeper sees a long way ahead of him and not far behind, and he smells a ripe hobo in any direction; caught, you are swept off the property. In a Panic the mob gathers round you first and only then turns on itself, and hobos hesitate to hit a truly rank opponent. The trough and the rain wash Stink off.
 
 Eating in private lowers Envy; eating where anyone can see raises it. Dropped food pulls the horde and the dog off you, and the hobo who grabs it becomes a target for the rest. On a phone, play in landscape.
 
@@ -39,6 +51,13 @@ In dev mode the game is on `window.__game`, so the browser console can poke at i
 __game.scene.getScene('Game').envy.add(999)
 ```
 
+To start a shower, or to jump to dusk:
+
+```js
+__game.scene.getScene('Game').sky.startRain()
+__game.scene.getScene('Game').sky.seconds = 120
+```
+
 ## Deploy
 
 Push to `master`. The GitHub Action builds the game and force-pushes `dist/` to the `deploy` branch, and Plesk Git pulls that branch into `skeletonbelly.com/amazingHoboPanic/`. The game is fully static: no server code, no secrets, scores in `localStorage`.
@@ -48,9 +67,10 @@ Push to `master`. The GitHub Action builds the game and force-pushes `dist/` to 
 ```
 index.html              page shell and the link back to Skeletonbelly
 src/main.ts             Phaser setup
-src/config.ts           every tunable number (speeds, damage, Envy, Panic timings)
+src/config.ts           every tunable number (speeds, damage, Envy, Panic timings, day length, Warmth, Stink)
 src/envy.ts             the hidden Envy value that triggers a Panic
-src/audio.ts            placeholder whistle, footsteps and bonks (Web Audio, no files)
+src/sky.ts              the clock and the weather: day, night and rain
+src/audio.ts            placeholder whistle, footsteps, bonks and rain (Web Audio, no files)
 src/home.ts             shows and hides the back link
 src/scenes/             Title, Game and GameOver scenes
 .github/workflows/      the deploy Action

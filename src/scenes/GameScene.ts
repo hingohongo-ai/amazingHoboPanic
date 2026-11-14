@@ -1,6 +1,24 @@
 import Phaser from 'phaser';
-import { COLORS, DOG, ENVY, ITEMS, PANIC, PLAYER, SPAWN, TOUCH, VIEW, WORLD, type ItemType } from '../config';
+import {
+  COLORS,
+  DOG,
+  DUMPSTER,
+  ENVY,
+  ITEMS,
+  NEWSPAPER,
+  PANIC,
+  PLAYER,
+  SHOPKEEPER,
+  SPAWN,
+  STINK,
+  TOUCH,
+  VIEW,
+  WARMTH,
+  WORLD,
+  type ItemType,
+} from '../config';
 import { Envy } from '../envy';
+import { Sky } from '../sky';
 import * as sfx from '../audio';
 import { showHome } from '../home';
 
@@ -10,9 +28,11 @@ type Point = { x: number; y: number };
 
 const bodyOf = (rect: Rect): Body => rect.body as Body;
 const dist = (a: Point, b: Point): number => Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y);
+const pick = <T>(list: T[]): T => list[Math.floor(Math.random() * list.length)];
 
 export interface RunStats {
   seconds: number;
+  days: number;
   panics: number;
   bonked: number;
   eaten: number;
@@ -26,7 +46,13 @@ interface GroundItem {
   noPickupUntil: number;
 }
 
-type Target = { kind: 'player' } | { kind: 'hobo'; hobo: Hobo } | { kind: 'item'; item: GroundItem } | null;
+type Target =
+  | { kind: 'player' }
+  /** Crowd in around the player and loom, without swinging. */
+  | { kind: 'crowd' }
+  | { kind: 'hobo'; hobo: Hobo }
+  | { kind: 'item'; item: GroundItem }
+  | null;
 
 interface Hobo {
   rect: Rect;
@@ -42,6 +68,8 @@ interface Hobo {
   grudge: Hobo | null;
   /** While positive, he has just eaten dropped food and the others want a word. */
   looter: number;
+  /** What the food he grabbed was worth. A big enough prize gets him mobbed at once. */
+  lootValue: number;
   /** While positive, the player bonked him and he remembers. */
   madAtPlayer: number;
 }
@@ -51,16 +79,64 @@ interface Townsperson {
   turnIn: number;
 }
 
+interface Dumpster {
+  rect: Rect;
+  /** Fills left to right while the player stands against it. */
+  progress: Rect;
+  full: boolean;
+  dwell: number;
+  refillIn: number;
+}
+
+interface Fire {
+  x: number;
+  y: number;
+  flame: Rect;
+  glow: Phaser.GameObjects.Arc;
+}
+
+interface Shopkeeper {
+  rect: Rect;
+  /** Which way he is pacing: 1 right, -1 left. */
+  dir: number;
+  /** Seconds of chase left; zero or less means he is minding the shop. */
+  chasing: number;
+  broomIn: number;
+}
+
 type PanicState = 'calm' | 'approach' | 'melee' | 'exit';
 
 const YARD_TOP = 960;
 const STREET_BOTTOM = 330;
 const TRAIN_EXIT: Point = { x: WORLD.w + 60, y: 1100 };
 
+// Six storefronts along main street. One of them has a shopkeeper and a pie on the sill.
+const SHOP = { firstX: 190, gap: 300, y: 110, w: 190, h: 120 };
+const KEEPER_SHOP_X = SHOP.firstX + SHOPKEEPER.shop * SHOP.gap;
+const KEEPER_WALK_Y = SHOP.y + SHOP.h / 2 + 30;
+const SILL: Point = { x: KEEPER_SHOP_X + 70, y: SHOP.y + SHOP.h / 2 + 12 };
+const FIRE_SPOTS: Point[] = [
+  { x: 350, y: 640 }, // the hobo camp
+  { x: 1700, y: 620 }, // the outskirts
+  { x: 300, y: 1240 }, // the far end of the yard, away from the dog
+];
+const DUMPSTER_SPOTS: Point[] = [
+  { x: 340, y: 90 }, // alleys between the shops
+  { x: 940, y: 90 },
+  { x: 1540, y: 90 },
+  { x: 760, y: 1250 }, // the yard
+];
+const TROUGH: Point = { x: 640, y: 292 };
+
 export class GameScene extends Phaser.Scene {
   private player!: Rect;
   private health = PLAYER.maxHealth;
   private hunger = PLAYER.maxHunger;
+  private warmth = WARMTH.max;
+  /** Cold the newspaper in your shirt can still soak up. */
+  private padding = 0;
+  private stink = 0;
+  private bathing = false;
   private sack: ItemType[] = [];
   private swingIn = 0;
   private playerStun = 0;
@@ -75,6 +151,22 @@ export class GameScene extends Phaser.Scene {
   private hobos: Hobo[] = [];
   private townsfolk: Townsperson[] = [];
   private dog!: { rect: Rect; home: Point; stun: number; biteIn: number; busy: number };
+
+  private sky!: Sky;
+  private fires: Fire[] = [];
+  private dumpsters: Dumpster[] = [];
+  private keeper!: Shopkeeper;
+  private pie!: Rect;
+  private pieBar!: Rect;
+  private pieOut = false;
+  private pieIn = 0;
+  private pieDwell = 0;
+  /** False while the mob is still gathering round the player; true once they turn on each other. */
+  private brawling = false;
+  private meleeAge = 0;
+  private hordeSize = 0;
+  private stinkCloud!: Phaser.GameObjects.Arc;
+  private flies: Rect[] = [];
 
   private walls!: Phaser.Physics.Arcade.StaticGroup;
   private hoboGroup!: Phaser.Physics.Arcade.Group;
@@ -94,7 +186,7 @@ export class GameScene extends Phaser.Scene {
 
   private respawnIn = SPAWN.respawnEverySec;
   private stillToArrive = 0;
-  private stats: RunStats = { seconds: 0, panics: 0, bonked: 0, eaten: 0 };
+  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
 
   constructor() {
     super('Game');
@@ -104,6 +196,19 @@ export class GameScene extends Phaser.Scene {
   init(): void {
     this.health = PLAYER.maxHealth;
     this.hunger = PLAYER.maxHunger;
+    this.warmth = WARMTH.max;
+    this.padding = 0;
+    this.stink = 0;
+    this.bathing = false;
+    this.fires = [];
+    this.dumpsters = [];
+    this.pieOut = false;
+    this.pieIn = 0;
+    this.pieDwell = 0;
+    this.brawling = false;
+    this.meleeAge = 0;
+    this.hordeSize = 0;
+    this.flies = [];
     this.sack = [];
     this.swingIn = 0;
     this.playerStun = 0;
@@ -117,7 +222,7 @@ export class GameScene extends Phaser.Scene {
     this.townsfolk = [];
     this.crows = [];
     this.respawnIn = SPAWN.respawnEverySec;
-    this.stats = { seconds: 0, panics: 0, bonked: 0, eaten: 0 };
+    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
     this.stillToArrive = 0;
     this.steer = null;
     this.swingHeld = false;
@@ -132,6 +237,7 @@ export class GameScene extends Phaser.Scene {
 
     this.buildTown();
     this.buildActors();
+    this.sky = new Sky(this);
     this.buildHud();
     this.buildPointerControls();
 
@@ -157,13 +263,46 @@ export class GameScene extends Phaser.Scene {
 
     this.walls = this.physics.add.staticGroup();
     for (let i = 0; i < 6; i++) {
-      const shop = this.add.rectangle(190 + i * 300, 110, 190, 120, COLORS.shop);
+      const color = i === SHOPKEEPER.shop ? COLORS.keeperShop : COLORS.shop;
+      const shop = this.add.rectangle(SHOP.firstX + i * SHOP.gap, SHOP.y, SHOP.w, SHOP.h, color);
       this.walls.add(shop);
     }
+    this.add.rectangle(SILL.x, SILL.y - 9, 34, 6, COLORS.sill); // the windowsill where the pie cools
+    this.pie = this.add.rectangle(SILL.x, SILL.y - 18, 14, 10, ITEMS[1].color).setDepth(2).setVisible(false);
+    this.pieBar = this.add
+      .rectangle(SILL.x - 17, SILL.y - 30, 34, 5, COLORS.buttonEdge)
+      .setOrigin(0, 0.5)
+      .setDepth(5)
+      .setScale(0, 1);
     // A few boxcars parked in the yard.
     for (const x of [420, 980, 1500]) {
       const car = this.add.rectangle(x, 1010, 220, 60, COLORS.rail);
       this.walls.add(car);
+    }
+
+    for (const spot of DUMPSTER_SPOTS) {
+      const rect = this.add.rectangle(spot.x, spot.y, 64, 40, COLORS.dumpster);
+      this.walls.add(rect);
+      const progress = this.add
+        .rectangle(spot.x - 32, spot.y - 30, 64, 5, COLORS.buttonEdge)
+        .setOrigin(0, 0.5)
+        .setDepth(5)
+        .setScale(0, 1);
+      this.dumpsters.push({ rect, progress, full: true, dwell: 0, refillIn: 0 });
+    }
+
+    this.add.rectangle(TROUGH.x, TROUGH.y, 84, 30, COLORS.trough).setStrokeStyle(3, COLORS.rail);
+
+    for (const spot of FIRE_SPOTS) {
+      const barrel = this.add.rectangle(spot.x, spot.y, 26, 30, COLORS.barrel).setDepth(2);
+      this.walls.add(barrel);
+      const flame = this.add.rectangle(spot.x, spot.y - 20, 16, 14, COLORS.flame).setDepth(2);
+      // The glow sits above the night tint, so a fire is the one bright thing after dark.
+      const glow = this.add
+        .circle(spot.x, spot.y, WARMTH.fireRadius, COLORS.flame, 0.08)
+        .setDepth(7.5)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      this.fires.push({ x: spot.x, y: spot.y, flame, glow });
     }
   }
 
@@ -193,6 +332,17 @@ export class GameScene extends Phaser.Scene {
     this.hoboGroup = this.physics.add.group();
     this.physics.add.collider(this.hoboGroup, this.walls);
     this.physics.add.collider(this.hoboGroup, this.hoboGroup);
+
+    const keeperRect = this.add.rectangle(KEEPER_SHOP_X, KEEPER_WALK_Y, 22, 26, COLORS.keeper).setDepth(3);
+    this.physics.add.existing(keeperRect);
+    this.physics.add.collider(keeperRect, this.walls);
+    this.keeper = { rect: keeperRect, dir: 1, chasing: 0, broomIn: 0 };
+
+    // Stink has no meter. It shows as a green haze and a few flies that follow you about.
+    this.stinkCloud = this.add.circle(0, 0, 20, COLORS.stink, 0).setDepth(3.5);
+    for (let i = 0; i < 6; i++) {
+      this.flies.push(this.add.rectangle(0, 0, 3, 3, COLORS.fly).setDepth(5).setVisible(false));
+    }
   }
 
   private buildHud(): void {
@@ -298,16 +448,24 @@ export class GameScene extends Phaser.Scene {
     const dt = Math.min(deltaMs, 50) / 1000;
     this.stats.seconds += dt;
 
+    this.sky.update(dt);
     this.updatePlayer(dt);
     this.updateNeeds(dt);
+    this.updateStinkLook();
+    this.updateFires();
+    this.updateDumpsters(dt);
     this.updateEnvy(dt);
     this.updateTownsfolk(dt);
+    this.updateKeeper(dt);
     this.updateDog(dt);
     this.updateHobos(dt);
     this.updateSpawns(dt);
     this.updateHud();
 
-    if (this.health <= 0) this.scene.start('GameOver', this.stats);
+    if (this.health <= 0) {
+      this.stats.days = this.sky.daysSurvived;
+      this.scene.start('GameOver', this.stats);
+    }
   }
 
   // ---------------------------------------------------------------- player
@@ -330,16 +488,29 @@ export class GameScene extends Phaser.Scene {
         dy = pointing.y;
       }
       const len = Math.hypot(dx, dy) || 1;
-      // A full sack is a heavy bindle: each item carried slows you a little.
-      const speed = PLAYER.speed * (1 - 0.04 * this.sack.length);
+      // A full sack is a heavy bindle: each item carried slows you a little. So does the cold.
+      const chill =
+        this.warmth >= WARMTH.slowBelow
+          ? 1
+          : WARMTH.slowTo + (1 - WARMTH.slowTo) * (this.warmth / WARMTH.slowBelow);
+      const speed = PLAYER.speed * (1 - 0.04 * this.sack.length) * chill;
       body.setVelocity((dx / len) * speed, (dy / len) * speed);
     }
 
     // Pick up whatever you walk over, if the sack has room.
     const now = this.time.now;
     for (const item of [...this.items]) {
-      if (this.sack.length >= PLAYER.sackSlots) break;
       if (now < item.noPickupUntil || dist(this.player, item.rect) > 24) continue;
+      if (item.type === NEWSPAPER) {
+        // Newspaper goes inside the shirt, not in the sack. Wet newspaper is no use to anyone.
+        if (this.sky.raining || this.padding >= WARMTH.paperMax) continue;
+        this.padding = Math.min(WARMTH.paperMax, this.padding + WARMTH.paperWorth);
+        this.removeItem(item);
+        sfx.pickup();
+        this.say(this.player.x, this.player.y - 24, 'Rustle.');
+        continue;
+      }
+      if (this.sack.length >= PLAYER.sackSlots) continue;
       this.sack.push(item.type);
       this.envy.add(item.type.value);
       this.removeItem(item);
@@ -359,6 +530,10 @@ export class GameScene extends Phaser.Scene {
     this.hunger = Math.min(PLAYER.maxHunger, this.hunger + food.food);
     this.stats.eaten++;
     sfx.munch();
+    if (food.stink) {
+      this.stink = Math.min(STINK.max, this.stink + food.stink);
+      this.say(this.player.x, this.player.y - 24, pick(['Toot.', 'The musical fruit.', 'Pardon.']));
+    }
     // Eating in private takes the item's value off Envy. Eating where anyone can see adds to it.
     this.envy.add(this.isSeen() ? food.value : -food.value);
   }
@@ -366,7 +541,9 @@ export class GameScene extends Phaser.Scene {
   private isSeen(): boolean {
     const near = (rect: Rect): boolean => dist(this.player, rect) < PLAYER.seenRadius;
     return (
-      this.townsfolk.some((t) => t.rect.visible && near(t.rect)) || this.hobos.some((h) => !h.ko && near(h.rect))
+      this.townsfolk.some((t) => t.rect.visible && near(t.rect)) ||
+      (this.keeper.rect.visible && near(this.keeper.rect)) ||
+      this.hobos.some((h) => !h.ko && near(h.rect))
     );
   }
 
@@ -410,6 +587,110 @@ export class GameScene extends Phaser.Scene {
   private updateNeeds(dt: number): void {
     this.hunger = Math.max(0, this.hunger - PLAYER.hungerPerSec * dt);
     if (this.hunger <= 0) this.health -= PLAYER.starvePerSec * dt;
+
+    // Warmth: a fire always wins; otherwise night and rain take it and dry daylight gives it back.
+    const cold = (this.sky.isNight ? WARMTH.nightPerSec : 0) + (this.sky.raining ? WARMTH.rainPerSec : 0);
+    if (this.sky.raining && this.padding > 0) {
+      this.padding = 0;
+      this.say(this.player.x, this.player.y - 24, 'Soggy newspaper.');
+    }
+    if (this.fires.some((fire) => dist(this.player, fire) < WARMTH.fireRadius)) {
+      this.warmth = Math.min(WARMTH.max, this.warmth + WARMTH.firePerSec * dt);
+    } else if (cold > 0) {
+      // The newspaper takes the cold first.
+      const soaked = Math.min(this.padding, cold * dt);
+      this.padding -= soaked;
+      this.warmth = Math.max(0, this.warmth - (cold * dt - soaked));
+    } else {
+      this.warmth = Math.min(WARMTH.max, this.warmth + WARMTH.sunPerSec * dt);
+    }
+    if (this.warmth <= 0) this.health -= WARMTH.freezePerSec * dt;
+
+    // Stink: it only ever goes up, unless it rains or you get in the horse trough.
+    this.stink += STINK.perSec * dt;
+    if (this.sky.raining) this.stink -= STINK.rainWashPerSec * dt;
+    const inTrough = Math.abs(this.player.x - TROUGH.x) < 46 && Math.abs(this.player.y - TROUGH.y) < 22;
+    if (inTrough) {
+      if (!this.bathing && this.stink > 10) {
+        sfx.splash();
+        this.say(this.player.x, this.player.y - 24, pick(['Ahh.', 'Bracing.', 'The horses will forgive me.']));
+      }
+      this.stink -= STINK.troughWashPerSec * dt;
+    }
+    this.bathing = inTrough;
+    this.stink = Phaser.Math.Clamp(this.stink, 0, STINK.max);
+  }
+
+  /** How rank the hobo is, from 0 to 1. */
+  private get stinkRatio(): number {
+    return this.stink / STINK.max;
+  }
+
+  private updateStinkLook(): void {
+    const ratio = this.stinkRatio;
+    this.stinkCloud.setPosition(this.player.x, this.player.y);
+    this.stinkCloud.setRadius(18 + ratio * 24);
+    this.stinkCloud.setFillStyle(COLORS.stink, ratio * 0.4);
+    const buzzing = Math.floor(ratio * this.flies.length + 0.001);
+    const t = this.time.now / 1000;
+    this.flies.forEach((fly, i) => {
+      fly.setVisible(i < buzzing);
+      const angle = t * (3 + i * 0.7) + i * 2.1;
+      const radius = 16 + (i % 3) * 6 + Math.sin(t * 5 + i) * 3;
+      fly.setPosition(this.player.x + Math.cos(angle) * radius, this.player.y - 6 + Math.sin(angle) * radius * 0.6);
+    });
+  }
+
+  private updateFires(): void {
+    const t = this.time.now / 1000;
+    const dark = this.sky.darkness;
+    this.fires.forEach((fire, i) => {
+      const flicker = 0.8 + 0.2 * Math.sin(t * 9 + i * 1.7);
+      fire.flame.setScale(1, flicker);
+      fire.glow.setFillStyle(COLORS.flame, (0.06 + 0.2 * dark) * flicker);
+    });
+  }
+
+  // ---------------------------------------------------------------- dumpsters
+
+  /** There is no search button: stand against a dumpster for a moment and in you go. */
+  private updateDumpsters(dt: number): void {
+    for (const bin of this.dumpsters) {
+      if (!bin.full) {
+        bin.refillIn -= dt;
+        if (bin.refillIn <= 0) {
+          bin.full = true;
+          bin.rect.setFillStyle(COLORS.dumpster);
+        }
+        continue;
+      }
+      const dx = Math.max(Math.abs(this.player.x - bin.rect.x) - bin.rect.width / 2, 0);
+      const dy = Math.max(Math.abs(this.player.y - bin.rect.y) - bin.rect.height / 2, 0);
+      const against = Math.hypot(dx, dy) < DUMPSTER.reach;
+      bin.dwell = against ? bin.dwell + dt : 0;
+      bin.progress.setScale(Math.min(bin.dwell / DUMPSTER.diveSec, 1), 1);
+      if (bin.dwell >= DUMPSTER.diveSec) this.dive(bin);
+    }
+  }
+
+  private dive(bin: Dumpster): void {
+    bin.full = false;
+    bin.dwell = 0;
+    bin.refillIn = DUMPSTER.refillSec;
+    bin.rect.setFillStyle(COLORS.dumpsterEmpty);
+    bin.progress.setScale(0, 1);
+    this.stink = Math.min(STINK.max, this.stink + STINK.perDive);
+    sfx.rummage();
+    this.say(bin.rect.x, bin.rect.y - 40, pick(['Fragrant.', 'Still warm.', 'Somebody threw this out?', 'Jackpot.']));
+    // What you find lands on the ground on the side you are standing.
+    const below = this.player.y >= bin.rect.y ? 1 : -1;
+    for (let i = 0; i < DUMPSTER.loot; i++) {
+      const type = Math.random() < DUMPSTER.paperChance ? NEWSPAPER : this.randomItemType();
+      const x = bin.rect.x + Phaser.Math.Between(-30, 30);
+      const y = bin.rect.y + below * Phaser.Math.Between(48, 64);
+      const item = this.placeItem(type, x, y, false);
+      item.noPickupUntil = this.time.now + 400; // long enough to see what came out
+    }
   }
 
   // ---------------------------------------------------------------- envy and the Panic
@@ -451,6 +732,9 @@ export class GameScene extends Phaser.Scene {
   private spawnHorde(): void {
     this.state = 'melee';
     const count = PANIC.firstHorde + PANIC.hordeGrowth * this.stats.panics;
+    this.hordeSize = count;
+    this.brawling = false;
+    this.meleeAge = 0;
     // They arrive in a stream, not all at once, so the brawl keeps getting fed.
     const gapMs = (PANIC.arrivalSec * 1000) / count;
     this.stillToArrive = count;
@@ -481,6 +765,7 @@ export class GameScene extends Phaser.Scene {
       target: null,
       grudge: null,
       looter: 0,
+      lootValue: 0,
       madAtPlayer: 0,
     });
   }
@@ -509,6 +794,19 @@ export class GameScene extends Phaser.Scene {
     if (this.state === 'melee' && this.stillToArrive <= 0) {
       const standing = this.hobos.reduce((n, hobo) => n + (hobo.ko ? 0 : 1), 0);
       if (standing <= PANIC.lastStanding) this.endPanic();
+    }
+
+    // The mob gathers round the player first. Only once it has does it turn on itself.
+    if (this.state === 'melee' && !this.brawling) {
+      this.meleeAge += dt;
+      const gathered = this.hobos.filter((h) => !h.ko && dist(h.rect, this.player) < PANIC.mobRadius);
+      if (gathered.length >= this.hordeSize * PANIC.mobShare || this.meleeAge >= PANIC.brawlAfterSec) {
+        this.brawling = true;
+        const loudmouth = gathered.length > 0 ? pick(gathered) : null;
+        if (loudmouth) {
+          this.say(loudmouth.rect.x, loudmouth.rect.y - 20, pick(['Quit shovin!', 'I saw him first!', 'That is MY spot!']));
+        }
+      }
     }
 
     for (const hobo of this.hobos) {
@@ -553,17 +851,27 @@ export class GameScene extends Phaser.Scene {
     }
     if (bestItem) return { kind: 'item', item: bestItem };
 
-    // 3. A hobo who just grabbed dropped food. Nobody likes a hobo with beans.
-    const looter = this.nearestHobo(hobo, 320, (other) => other.looter > 0);
+    // 3. A hobo who just grabbed dropped food. Nobody likes a hobo with beans, but before the
+    //    brawl starts it takes a real prize, a whole chicken say, to turn the mob on him.
+    const looter = this.nearestHobo(
+      hobo,
+      320,
+      (other) => other.looter > 0 && (this.brawling || other.lootValue >= PANIC.prizeValue),
+    );
     if (looter) return { kind: 'hobo', hobo: looter };
 
     // 4. The player: always if he bonked you, otherwise only some of the time and only for his food.
     if (hobo.madAtPlayer > 0) return { kind: 'player' };
-    if (this.sack.length > 0 && Math.random() < PANIC.playerFocus) return { kind: 'player' };
+    const focus = this.brawling ? PANIC.playerFocus : PANIC.mobFocus;
+    if (this.sack.length > 0 && Math.random() < focus) return { kind: 'player' };
 
-    // 5. Otherwise pick a fight with the nearest hobo. The player is the last resort.
+    // 5. While the mob is gathering, everyone else crowds in round the player and looms.
+    if (!this.brawling) return { kind: 'crowd' };
+
+    // 6. Once the brawl is on, pick a fight with the nearest hobo, or go back to looming.
     const nearest = this.nearestHobo(hobo, Infinity, () => true);
-    return nearest ? { kind: 'hobo', hobo: nearest } : { kind: 'player' };
+    if (!nearest) return { kind: 'player' };
+    return Math.random() < PANIC.brawlChance ? { kind: 'hobo', hobo: nearest } : { kind: 'crowd' };
   }
 
   private nearestHobo(from: Hobo, within: number, wanted: (other: Hobo) => boolean): Hobo | null {
@@ -594,22 +902,50 @@ export class GameScene extends Phaser.Scene {
         this.removeItem(target.item); // gone in one bite
         sfx.munch();
         hobo.looter = PANIC.lootEnvySec;
+        hobo.lootValue = target.item.type.value;
         hobo.rect.setFillStyle(COLORS.hoboLooter);
       }
       return;
     }
 
+    if (target.kind === 'crowd') {
+      if (dist(hobo.rect, this.player) > PANIC.crowdRing) this.moveToward(hobo.rect, this.player, hobo.speed);
+      else bodyOf(hobo.rect).setVelocity(0, 0);
+      return;
+    }
+
     const victim = target.kind === 'player' ? this.player : target.hobo.rect;
     this.moveToward(hobo.rect, victim, hobo.speed);
-    if (dist(hobo.rect, victim) < PANIC.hoboReach - 4 && hobo.cooldown <= 0) this.hoboSwing(hobo);
+    if (dist(hobo.rect, victim) >= PANIC.hoboReach - 4 || hobo.cooldown > 0) return;
+
+    // A truly rank opponent gives even a hobo pause.
+    if (target.kind === 'player' && Math.random() < this.stinkShield) {
+      hobo.cooldown = STINK.hesitateSec;
+      hobo.stun = STINK.hesitateSec * 0.5;
+      this.shove(hobo.rect, this.player, 90);
+      if (Math.random() < 0.5) this.say(hobo.rect.x, hobo.rect.y - 20, pick(['Phew!', 'Good LORD.', 'Not that one.']));
+      return;
+    }
+    this.hoboSwing(hobo);
   }
 
-  /** A hobo's swing hits everyone in reach, friend or not. This is how the brawl spreads. */
+  /** The chance that a hobo about to hit the player thinks better of it. */
+  private get stinkShield(): number {
+    const over = (this.stink - STINK.hesitateFrom) / (STINK.max - STINK.hesitateFrom);
+    return Phaser.Math.Clamp(over, 0, 1) * STINK.hesitateChance;
+  }
+
+  /**
+   * Once the brawl is on, a hobo's swing hits everyone in reach, friend or not, and that is how
+   * it spreads. Before then he is more careful: only the player, or the one hobo he is after.
+   */
   private hoboSwing(hobo: Hobo): void {
     hobo.cooldown = PANIC.hoboSwingCooldown * Phaser.Math.FloatBetween(0.8, 1.3);
     if (dist(hobo.rect, this.player) < PANIC.hoboReach) this.hurtPlayer(PANIC.hoboDamage, hobo.rect);
+    const aimedAt = hobo.target?.kind === 'hobo' ? hobo.target.hobo : null;
     for (const other of this.hobos) {
       if (other === hobo || other.ko || dist(hobo.rect, other.rect) > PANIC.hoboReach) continue;
+      if (!this.brawling && other !== aimedAt) continue;
       this.hitHobo(other, hobo.rect, hobo);
     }
   }
@@ -646,6 +982,93 @@ export class GameScene extends Phaser.Scene {
       const stroll = Phaser.Math.Between(-1, 1) * 45;
       bodyOf(t.rect).setVelocity(stroll, 0);
     }
+  }
+
+  /**
+   * The shopkeeper paces his shopfront. If a hobo comes onto the property and close enough to
+   * notice (and a ripe hobo is noticed from a long way off), out comes the broom.
+   */
+  private updateKeeper(dt: number): void {
+    const keeper = this.keeper;
+    const body = bodyOf(keeper.rect);
+    keeper.broomIn -= dt;
+
+    // The pie on the sill takes a moment to lift, and a broom in the ribs starts you over.
+    if (!this.pieOut) {
+      this.pieIn -= dt;
+      if (this.pieIn <= 0) {
+        this.pieOut = true;
+        this.pie.setVisible(true);
+      }
+    } else {
+      const lifting =
+        dist(this.player, SILL) < SHOPKEEPER.sillReach && this.sack.length < PLAYER.sackSlots && this.playerStun <= 0;
+      this.pieDwell = lifting ? this.pieDwell + dt : 0;
+      this.pieBar.setScale(Math.min(this.pieDwell / SHOPKEEPER.liftSec, 1), 1);
+      if (this.pieDwell >= SHOPKEEPER.liftSec) {
+        this.pieOut = false;
+        this.pieDwell = 0;
+        this.pieIn = SHOPKEEPER.pieEverySec;
+        this.pie.setVisible(false);
+        this.pieBar.setScale(0, 1);
+        this.sack.push(ITEMS[1]);
+        this.envy.add(ITEMS[1].value);
+        sfx.pickup();
+        this.say(SILL.x, SILL.y - 40, pick(['Still warm.', 'Finders keepers.', 'It was just sitting there.']));
+      }
+    }
+
+    // When the whistle blows he goes inside and bolts the door.
+    if (this.state !== 'calm') {
+      keeper.rect.setVisible(false);
+      keeper.chasing = 0;
+      body.enable = false;
+      return;
+    }
+    if (!keeper.rect.visible) {
+      keeper.rect.setVisible(true).setPosition(KEEPER_SHOP_X, KEEPER_WALK_Y);
+      body.enable = true;
+      body.reset(KEEPER_SHOP_X, KEEPER_WALK_Y);
+    }
+
+    const onProperty =
+      Math.abs(this.player.x - KEEPER_SHOP_X) < SHOPKEEPER.propertyHalfWidth &&
+      this.player.y < SHOPKEEPER.propertyBottom;
+    // He sees a long way in front of him and not far behind. He smells in every direction.
+    const ahead = (this.player.x - keeper.rect.x) * keeper.dir > 0;
+    const notice =
+      (ahead ? SHOPKEEPER.noticeAhead : SHOPKEEPER.noticeBehind) + SHOPKEEPER.stinkRadius * this.stinkRatio;
+    if (keeper.chasing <= 0 && onProperty && dist(keeper.rect, this.player) < notice) {
+      keeper.chasing = SHOPKEEPER.giveUpSec;
+      this.say(keeper.rect.x, keeper.rect.y - 24, pick(['GIT!', 'SCRAM!', 'Not in MY doorway!', 'I just swept there!']));
+    }
+
+    if (keeper.chasing > 0) {
+      keeper.chasing = onProperty ? keeper.chasing - dt : 0;
+      this.moveToward(keeper.rect, this.player, SHOPKEEPER.chaseSpeed);
+      if (dist(keeper.rect, this.player) < 30 && keeper.broomIn <= 0) {
+        keeper.broomIn = 0.5;
+        // Swept off the property: away from the shop door, with a stagger. No damage, only dignity.
+        this.shove(this.player, { x: KEEPER_SHOP_X, y: SHOP.y }, SHOPKEEPER.shoveSpeed);
+        this.playerStun = SHOPKEEPER.staggerSec;
+        sfx.shoo();
+      }
+      return;
+    }
+
+    // Back to the shopfront, then up and down it.
+    const left = KEEPER_SHOP_X - SHOP.w / 2;
+    const right = KEEPER_SHOP_X + SHOP.w / 2;
+    const offBeat =
+      Math.abs(keeper.rect.y - KEEPER_WALK_Y) > 6 || keeper.rect.x < left - 6 || keeper.rect.x > right + 6;
+    if (offBeat) {
+      const backTo = { x: Phaser.Math.Clamp(keeper.rect.x, left, right), y: KEEPER_WALK_Y };
+      this.moveToward(keeper.rect, backTo, SHOPKEEPER.paceSpeed * 2.5);
+      return;
+    }
+    if (keeper.rect.x <= left) keeper.dir = 1;
+    if (keeper.rect.x >= right) keeper.dir = -1;
+    body.setVelocity(keeper.dir * SHOPKEEPER.paceSpeed, 0);
   }
 
   private updateDog(dt: number): void {
@@ -709,13 +1132,16 @@ export class GameScene extends Phaser.Scene {
     const x = Phaser.Math.Between(40, WORLD.w - 40);
     let y = Phaser.Math.Between(210, WORLD.h - 40);
     if (y > 960 && y < 1060) y = 1160; // keep clear of the parked boxcars
-    this.placeItem(this.randomItemType(), x, y, false);
+    const type = Math.random() < SPAWN.paperChance ? NEWSPAPER : this.randomItemType();
+    this.placeItem(type, x, y, false);
   }
 
-  private placeItem(type: ItemType, x: number, y: number, dropped: boolean): void {
+  private placeItem(type: ItemType, x: number, y: number, dropped: boolean): GroundItem {
     const size = 10 + type.value / 3;
     const rect = this.add.rectangle(x, y, size, size, type.color).setDepth(2);
-    this.items.push({ rect, type, dropped, noPickupUntil: dropped ? this.time.now + 1500 : 0 });
+    const item: GroundItem = { rect, type, dropped, noPickupUntil: dropped ? this.time.now + 1500 : 0 };
+    this.items.push(item);
+    return item;
   }
 
   private removeItem(item: GroundItem): void {
@@ -735,6 +1161,15 @@ export class GameScene extends Phaser.Scene {
     bodyOf(rect).setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
   }
 
+  /** A few words that float up and fade. Most of the jokes arrive this way. */
+  private say(x: number, y: number, words: string): void {
+    const text = this.add
+      .text(x, y, words, { fontFamily: 'Georgia, serif', fontSize: '16px', fontStyle: 'italic', color: '#f0e6cc' })
+      .setOrigin(0.5)
+      .setDepth(9);
+    this.tweens.add({ targets: text, y: y - 34, alpha: 0, duration: 1500, onComplete: () => text.destroy() });
+  }
+
   private updateHud(): void {
     const bar = (value: number, max: number): string => {
       const filled = Phaser.Math.Clamp(Math.round((value / max) * 10), 0, 10);
@@ -742,8 +1177,9 @@ export class GameScene extends Phaser.Scene {
     };
     const sack = this.sack.map((item) => item.name).join(', ') || 'empty';
     this.hud.setText(
-      `Health ${bar(this.health, PLAYER.maxHealth)}   Hunger ${bar(this.hunger, PLAYER.maxHunger)}   ` +
-        `Sack ${this.sack.length}/${PLAYER.sackSlots}: ${sack}`,
+      `Day ${this.sky.day}   Health ${bar(this.health, PLAYER.maxHealth)}   ` +
+        `Hunger ${bar(this.hunger, PLAYER.maxHunger)}   Warmth ${bar(this.warmth, WARMTH.max)}` +
+        `${this.padding > 0 ? ' +paper' : ''}\nSack ${this.sack.length}/${PLAYER.sackSlots}: ${sack}`,
     );
   }
 }

@@ -103,3 +103,63 @@ export function pickup(): void {
 export function munch(): void {
   blip(180, 120, 0.15, 0.2, 'sawtooth');
 }
+
+/** A short burst of filtered noise: the raw material for swishes, splashes and rustles. */
+function hiss(seconds: number, hz: number, volume: number, type: BiquadFilterType, delay = 0): void {
+  if (!ctx || !noise) return;
+  const at = ctx.currentTime + delay;
+  const source = ctx.createBufferSource();
+  source.buffer = noise;
+  const filter = ctx.createBiquadFilter();
+  filter.type = type;
+  filter.frequency.value = hz;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(volume, at);
+  gain.gain.exponentialRampToValueAtTime(0.001, at + seconds);
+  source.connect(filter).connect(gain).connect(ctx.destination);
+  source.start(at, Math.random() * 0.5, seconds + 0.02);
+}
+
+/** The shopkeeper's broom. */
+export function shoo(): void {
+  hiss(0.2, 2400, 0.3, 'highpass');
+}
+
+/** Into the horse trough. */
+export function splash(): void {
+  hiss(0.35, 900, 0.3, 'bandpass');
+}
+
+/** Into the dumpster. */
+export function rummage(): void {
+  for (const delay of [0, 0.14, 0.3]) hiss(0.1, 500, 0.25, 'bandpass', delay);
+}
+
+let shower: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+
+/** Rain is one long loop of hiss that fades in and out. */
+export function rain(on: boolean): void {
+  if (!ctx || !noise) return;
+  const now = ctx.currentTime;
+  if (on && !shower) {
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+    source.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 1400;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.05, now + 1.5);
+    source.connect(filter).connect(gain).connect(ctx.destination);
+    source.start();
+    shower = { source, gain };
+  } else if (!on && shower) {
+    const { source, gain } = shower;
+    shower = null;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(gain.gain.value, now);
+    gain.gain.linearRampToValueAtTime(0, now + 1);
+    source.stop(now + 1.1);
+  }
+}
