@@ -25,31 +25,41 @@ const clock = (seconds: number): string =>
   `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
 export class GameOverScene extends Phaser.Scene {
-  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
+  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, cause: '' };
 
   constructor() {
     super('GameOver');
   }
 
   init(data: Partial<RunStats>): void {
-    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, ...data };
+    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, cause: '', ...data };
   }
 
   create(): void {
     showHome(true);
-    const { seconds, days, panics, bonked, eaten } = this.stats;
+    const { seconds, days, panics, bonked, eaten, cause } = this.stats;
     const best = readBest();
     const isBest = seconds > best;
     if (isBest) writeBest(seconds);
 
     const cx = VIEW.w / 2;
     this.add
-      .text(cx, 150, 'THE RAILS CLAIM ANOTHER', { fontFamily: 'Georgia, serif', fontSize: '44px', color: '#e8c07a' })
+      .text(cx, 110, 'THE RAILS CLAIM ANOTHER', { fontFamily: 'Georgia, serif', fontSize: '44px', color: '#e8c07a' })
+      .setOrigin(0.5);
+    this.add
+      .text(cx, 175, cause, {
+        fontFamily: 'Georgia, serif',
+        fontSize: '22px',
+        fontStyle: 'italic',
+        color: '#f0e6cc',
+        align: 'center',
+        wordWrap: { width: VIEW.w - 120 },
+      })
       .setOrigin(0.5);
     this.add
       .text(
         cx,
-        310,
+        325,
         [
           `Days survived   ${days}`,
           `Time on the bum ${clock(seconds)}${isBest ? '   (new best)' : ''}`,
@@ -62,7 +72,7 @@ export class GameOverScene extends Phaser.Scene {
       )
       .setOrigin(0.5);
     this.add
-      .text(cx, 480, 'Press Space or click to try again', {
+      .text(cx, 500, 'Press Space or click to try again', {
         fontFamily: 'Georgia, serif',
         fontSize: '22px',
         color: '#f0c05a',

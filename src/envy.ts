@@ -6,6 +6,8 @@ import { ENVY } from './config';
  */
 export class Envy {
   value = 0;
+  /** Multiplier on Envy gained. A top hat draws the eye. Losses are never multiplied. */
+  gain = 1;
   threshold = Envy.rollThreshold();
 
   private static rollThreshold(): number {
@@ -15,7 +17,7 @@ export class Envy {
 
   /** Positive for loot gained or eating in public, negative for loot lost or eaten in private. */
   add(amount: number): void {
-    this.value = Math.max(0, this.value + amount);
+    this.value = Math.max(0, this.value + (amount > 0 ? amount * this.gain : amount));
   }
 
   /** Envy fades slowly while the player is carrying little. */

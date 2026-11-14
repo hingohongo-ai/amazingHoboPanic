@@ -14,6 +14,8 @@ export interface ItemType {
   color: number;
   /** Relative chance of spawning. */
   weight: number;
+  /** Not food: a thing in the sack with a button of its own. EAT skips it. */
+  gadget?: 'harmonica' | 'limburger';
 }
 
 export const ITEMS: ItemType[] = [
@@ -24,17 +26,245 @@ export const ITEMS: ItemType[] = [
 
 export const PLAYER = {
   speed: 170,
-  sackSlots: 6,
   maxHealth: 100,
   maxHunger: 100,
   hungerPerSec: 1.1,
   starvePerSec: 3,
   swingCooldown: 0.45,
-  swingRadius: 48,
   /** Anyone this close counts as watching you eat. */
   seenRadius: 230,
   /** Seconds of safety after taking a hit. */
   mercySec: 0.6,
+};
+
+/** The stick is the bindle's damage and reach. You start with the first and only ever trade up. */
+export interface Stick {
+  name: string;
+  /** Hobo hit points one swing takes off. A hobo has PANIC.hoboHp. */
+  damage: number;
+  /** Radius of the swing, in pixels. */
+  reach: number;
+  /** A lump of Envy for showing off a new stick. */
+  envy: number;
+  color: number;
+}
+
+export const STICKS: Stick[] = [
+  { name: 'twig', damage: 1, reach: 48, envy: 0, color: 0x8a6a3a },
+  { name: 'broomstick', damage: 2, reach: 62, envy: 12, color: 0xd8b060 },
+  { name: 'rebar', damage: 3, reach: 76, envy: 25, color: 0xb0522a },
+];
+
+/** The sack is how much the bindle carries. You start with the first and only ever trade up. */
+export interface Sack {
+  name: string;
+  slots: number;
+  envy: number;
+  color: number;
+}
+
+export const SACKS: Sack[] = [
+  { name: 'hanky', slots: 3, envy: 0, color: 0xc04040 },
+  { name: 'flour sack', slots: 6, envy: 8, color: 0xe8e0c8 },
+  { name: 'mail bag', slots: 10, envy: 15, color: 0x8a7a4a },
+];
+
+export type WearSlot = 'hat' | 'coat' | 'boots';
+
+/** Something worn. One piece per slot; putting one on drops the other where you stand. */
+export interface Wearable {
+  name: string;
+  slot: WearSlot;
+  /** Share of every bindle hit it blocks, 0 to 1. */
+  block: number;
+  /** For bean-can armor: extra share blocked for each empty can strung on it. */
+  blockPerCan?: number;
+  /** Multiplier on the cold that night and rain deal. Below 1 is warmer. */
+  cold: number;
+  /** Multiplier on walking speed. */
+  speed: number;
+  /** True if a hobo's hit can never stagger you or even move you in it. */
+  steady?: boolean;
+  /** True if a hobo's hit can never stagger you in it. You still get shoved. */
+  noStagger?: boolean;
+  /** Multiplier on how hard your swing shoves a hobo back. */
+  kick?: number;
+  /** Pixels added to how far away the shopkeeper notices you. */
+  keeperNotice?: number;
+  /** True if the shopkeeper takes you for a gentleman and never reaches for the broom. */
+  keeperIgnores?: boolean;
+  /** Multiplier on all Envy gained while it is on. */
+  envyGain?: number;
+  /** The chance a hobo picking a target picks you, sack or no sack, if that beats his usual odds. */
+  hoboFocus?: number;
+  /** True if you cannot bend over in it: no dumpsters, no pie, no prying. */
+  noSearch?: boolean;
+  /** Multiplier on how far away the dog notices you. Clanking carries. */
+  dogNotice: number;
+  /** A lump of Envy for being seen in it. */
+  envy: number;
+  /** What a hobo calls it when he wants it back. Defaults to the slot: COAT, HAT, BOOTS. */
+  muttered?: string;
+  color: number;
+}
+
+export const COATS: Wearable[] = [
+  { name: 'wool coat', slot: 'coat', block: 0, cold: 0.5, speed: 1, dogNotice: 1, envy: 10, color: 0x5a6a8a },
+  { name: 'stiff overcoat', slot: 'coat', block: 0.35, cold: 0.8, speed: 1, dogNotice: 1, envy: 8, color: 0x3a3a44 },
+  {
+    name: 'barrel and suspenders',
+    slot: 'coat',
+    block: 0.75,
+    cold: 0.9,
+    speed: 0.55,
+    steady: true,
+    noSearch: true,
+    dogNotice: 1,
+    envy: 3,
+    muttered: 'BARREL',
+    color: 0x7a4a22,
+  },
+  {
+    name: 'bean-can armor',
+    slot: 'coat',
+    block: 0,
+    blockPerCan: 0.06,
+    cold: 1,
+    speed: 1,
+    dogNotice: 1.6,
+    envy: 2,
+    muttered: 'CANS',
+    color: 0xb8b8b0,
+  },
+];
+
+export const HATS: Wearable[] = [
+  { name: 'stew pot', slot: 'hat', block: 0.15, cold: 1, speed: 1, dogNotice: 1, envy: 3, muttered: 'POT', color: 0x55585c },
+  {
+    name: 'top hat and monocle',
+    slot: 'hat',
+    block: 0,
+    cold: 1,
+    speed: 1,
+    dogNotice: 1,
+    envy: 15,
+    envyGain: 1.5,
+    hoboFocus: 0.85,
+    keeperIgnores: true,
+    color: 0x101014,
+  },
+];
+
+export const BOOTS: Wearable[] = [
+  {
+    name: 'hobnail boots',
+    slot: 'boots',
+    block: 0,
+    cold: 1,
+    speed: 1,
+    noStagger: true,
+    kick: 1.8,
+    dogNotice: 1.4,
+    keeperNotice: 60,
+    envy: 6,
+    color: 0x2a1c10,
+  },
+];
+
+/** Sack items that are not food. Each takes a slot and gets a button while you carry it. */
+export const HARMONICA_ITEM: ItemType = {
+  name: 'harmonica',
+  value: 6,
+  food: 0,
+  color: 0xc8c8d8,
+  weight: 0,
+  gadget: 'harmonica',
+};
+export const LIMBURGER_ITEM: ItemType = {
+  name: 'Limburger',
+  value: 3,
+  food: 0,
+  color: 0xd8d070,
+  weight: 0,
+  gadget: 'limburger',
+};
+
+export const HARMONICA = {
+  /** Hobos this close stop and dance. */
+  radius: 190,
+  /** Seconds they dance, and seconds you are busy playing and cannot swing. */
+  danceSec: 4,
+  /** Seconds from the start of one tune until you have the breath for another. */
+  cooldownSec: 12,
+};
+
+export const ARMOR = {
+  /** Empty cans kept from eaten beans. They only count while the bean-can armor is on. */
+  maxCans: 10,
+  /** Extra share of a bindle hit blocked while there is dry newspaper in your shirt. */
+  paperBlock: 0.1,
+  /** However much is piled on, a hit never loses more than this share. */
+  maxBlock: 0.85,
+};
+
+/** What a piece of gear lying on the ground can be. */
+export type Gear =
+  | { kind: 'stick'; tier: number }
+  | { kind: 'sack'; tier: number }
+  | { kind: 'wear'; wear: Wearable }
+  | { kind: 'item'; item: ItemType };
+
+/**
+ * Gear turns up in dumpsters and falls out of flattened hobos. Nothing here has a fixed spot.
+ * The rebar is not in this list: it is wedged in the track (see REBAR).
+ */
+export const GEAR_FINDS: { gear: Gear; weight: number }[] = [
+  { gear: { kind: 'stick', tier: 1 }, weight: 3 },
+  { gear: { kind: 'sack', tier: 1 }, weight: 3 },
+  { gear: { kind: 'sack', tier: 2 }, weight: 1 },
+  { gear: { kind: 'wear', wear: COATS[0] }, weight: 2 },
+  { gear: { kind: 'wear', wear: COATS[1] }, weight: 2 },
+  { gear: { kind: 'wear', wear: COATS[2] }, weight: 1 },
+  { gear: { kind: 'wear', wear: COATS[3] }, weight: 2 },
+  { gear: { kind: 'wear', wear: HATS[0] }, weight: 2 },
+  { gear: { kind: 'wear', wear: HATS[1] }, weight: 1 },
+  { gear: { kind: 'wear', wear: BOOTS[0] }, weight: 2 },
+  { gear: { kind: 'item', item: HARMONICA_ITEM }, weight: 1 },
+  { gear: { kind: 'item', item: LIMBURGER_ITEM }, weight: 2 },
+];
+
+export const GEAR = {
+  /** Chance that one dumpster dive turns up a piece of gear as well as its food. */
+  dumpsterChance: 0.18,
+  /** Chance that a flattened hobo leaves a piece of gear behind. */
+  hoboDropChance: 0.07,
+  /** How close you have to walk to pick a piece up. */
+  pickupRadius: 24,
+  /** A piece you just took off cannot be put back on until you have stepped this far away from it. */
+  stepOffRadius: 44,
+};
+
+/** The best stick is wedged in the track in the dog's part of the yard. */
+export const REBAR = {
+  x: 1235,
+  y: 1100,
+  /** Seconds of standing still at it to pry it loose. A bite, a bonk or a swing of your own starts the count over. */
+  prySec: 2.5,
+  reach: 26,
+};
+
+/** A hobo's hit can stagger you: no swinging, and your feet only half listen. Nothing spills. */
+export const STAGGER = {
+  /** Chance that a bindle hit that lands staggers you. */
+  chance: 0.22,
+  minSec: 1,
+  maxSec: 2,
+  /** How hard the hit sends you sliding. */
+  shoveSpeed: 330,
+  /** Share of your normal speed you can steer toward while staggered. */
+  steerShare: 0.5,
+  /** How quickly the slide gives way to your steering. Lower is slipperier. */
+  grip: 2.2,
 };
 
 export const ENVY = {
@@ -87,6 +317,13 @@ export const PANIC = {
   lootEnvySec: 6,
   /** Seconds a hobo stays angry at a player who bonked him. */
   madAtPlayerSec: 4,
+  /**
+   * If you took gear that fell out of a hobo, the next horde has heard about it. Every so many
+   * seconds, picked in this range, one hobo near you mutters what was taken.
+   */
+  mutterMinSec: 1.5,
+  mutterMaxSec: 3.5,
+  mutterRadius: 260,
 };
 
 export const DOG = {
@@ -235,6 +472,7 @@ export const COLORS = {
   flame: 0xf08a24,
   dumpster: 0x2f5a44,
   dumpsterEmpty: 0x26342c,
+  gearLabel: '#e8c07a',
   trough: 0x4f7896,
   stink: 0x8a9a2a,
   fly: 0x0c0c0c,

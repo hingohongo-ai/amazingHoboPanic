@@ -104,6 +104,31 @@ export function munch(): void {
   blip(180, 120, 0.15, 0.2, 'sawtooth');
 }
 
+/** A wheezy little tune, a note at a time. */
+export function harmonica(seconds: number): void {
+  if (!ctx) return;
+  const tune = [392, 440, 494, 392, 494, 523, 587, 494, 440, 392];
+  const step = 0.2;
+  for (let i = 0; i * step < seconds; i++) {
+    const at = ctx.currentTime + i * step;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, at);
+    gain.gain.linearRampToValueAtTime(0.07, at + 0.03);
+    gain.gain.linearRampToValueAtTime(0, at + step);
+    gain.connect(ctx.destination);
+    // Two reeds a hair apart is what makes it sound like a harmonica and not a doorbell.
+    for (const detune of [0, 9]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = tune[i % tune.length];
+      osc.detune.value = detune;
+      osc.connect(gain);
+      osc.start(at);
+      osc.stop(at + step);
+    }
+  }
+}
+
 /** A short burst of filtered noise: the raw material for swishes, splashes and rustles. */
 function hiss(seconds: number, hz: number, volume: number, type: BiquadFilterType, delay = 0): void {
   if (!ctx || !noise) return;

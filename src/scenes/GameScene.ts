@@ -1,21 +1,33 @@
 import Phaser from 'phaser';
 import {
+  ARMOR,
+  COATS,
   COLORS,
   DOG,
   DUMPSTER,
   ENVY,
+  GEAR,
+  GEAR_FINDS,
+  HARMONICA,
   ITEMS,
   NEWSPAPER,
   PANIC,
   PLAYER,
+  REBAR,
+  SACKS,
   SHOPKEEPER,
   SPAWN,
+  STAGGER,
+  STICKS,
   STINK,
   TOUCH,
   VIEW,
   WARMTH,
   WORLD,
+  type Gear,
   type ItemType,
+  type Wearable,
+  type WearSlot,
 } from '../config';
 import { Envy } from '../envy';
 import { Sky } from '../sky';
@@ -36,6 +48,19 @@ export interface RunStats {
   panics: number;
   bonked: number;
   eaten: number;
+  /** What finally did it, as a line for the game-over screen. */
+  cause: string;
+}
+
+/** A stick, sack or coat lying on the ground, with its name written under it. */
+interface GroundGear {
+  rect: Rect;
+  label: Phaser.GameObjects.Text;
+  gear: Gear;
+  /** True for a piece you just took off, until you step away from it. Stops it going straight back on. */
+  underfoot: boolean;
+  /** True if it fell out of a flattened hobo. His friends will want a word about that. */
+  fromHobo: boolean;
 }
 
 interface GroundItem {
@@ -44,6 +69,10 @@ interface GroundItem {
   /** Dropped food is what the horde and the dog go for. */
   dropped: boolean;
   noPickupUntil: number;
+  /** Gadgets have their name written under them, like gear. */
+  label?: Phaser.GameObjects.Text;
+  /** True if it fell out of a flattened hobo. */
+  fromHobo?: boolean;
 }
 
 type Target =
@@ -72,6 +101,8 @@ interface Hobo {
   lootValue: number;
   /** While positive, the player bonked him and he remembers. */
   madAtPlayer: number;
+  /** While positive, there is a harmonica playing and he cannot help himself. */
+  dancing: number;
 }
 
 interface Townsperson {
@@ -143,6 +174,35 @@ export class GameScene extends Phaser.Scene {
   private hurtFlash = 0;
   private safeFor = 0;
 
+  // The bindle and what you are wearing.
+  private stickTier = 0;
+  private sackTier = 0;
+  private wear: Record<WearSlot, Wearable | null> = { hat: null, coat: null, boots: null };
+  /** Empty bean cans kept on a string. They are armor only while the bean-can armor is on. */
+  private cans = 0;
+  /** Seconds of stagger left: no swinging, and steering only half works. */
+  private stagger = 0;
+  private gear: GroundGear[] = [];
+  private rebar: { rect: Rect; label: Phaser.GameObjects.Text; bar: Rect; dwell: number } | null = null;
+  private nagIn = 0;
+  private hatRect!: Rect;
+  private bootRect!: Rect;
+  /** Seconds of tune left to play, and seconds until there is breath for the next. */
+  private playing = 0;
+  private breathIn = 0;
+  private wantPlay = false;
+  private wantCheese = false;
+  private playButton!: { disc: Phaser.GameObjects.Arc; label: Phaser.GameObjects.Text };
+  private cheeseButton!: { disc: Phaser.GameObjects.Arc; label: Phaser.GameObjects.Text };
+  private greetIn = 0;
+  /** What you have taken off flattened hobos since the last horde arrived: STICK, COAT and so on. */
+  private taken: string[] = [];
+  /** What this horde is muttering about, and how long until the next mutter. */
+  private mutters: string[] = [];
+  private mutterIn = 0;
+  /** Set only when a hit, not a slow drain, is what finished the player. */
+  private killedBy: 'bindle' | 'dog' | null = null;
+
   private envy = new Envy();
   private state: PanicState = 'calm';
   private shownStage = -1;
@@ -186,7 +246,7 @@ export class GameScene extends Phaser.Scene {
 
   private respawnIn = SPAWN.respawnEverySec;
   private stillToArrive = 0;
-  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
+  private stats: RunStats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, cause: '' };
 
   constructor() {
     super('Game');
@@ -222,7 +282,24 @@ export class GameScene extends Phaser.Scene {
     this.townsfolk = [];
     this.crows = [];
     this.respawnIn = SPAWN.respawnEverySec;
-    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0 };
+    this.stats = { seconds: 0, days: 0, panics: 0, bonked: 0, eaten: 0, cause: '' };
+    this.stickTier = 0;
+    this.sackTier = 0;
+    this.wear = { hat: null, coat: null, boots: null };
+    this.cans = 0;
+    this.stagger = 0;
+    this.gear = [];
+    this.rebar = null;
+    this.nagIn = 0;
+    this.playing = 0;
+    this.breathIn = 0;
+    this.wantPlay = false;
+    this.wantCheese = false;
+    this.greetIn = 0;
+    this.taken = [];
+    this.mutters = [];
+    this.mutterIn = 0;
+    this.killedBy = null;
     this.stillToArrive = 0;
     this.steer = null;
     this.swingHeld = false;
@@ -243,7 +320,7 @@ export class GameScene extends Phaser.Scene {
 
     for (let i = 0; i < SPAWN.itemsOnMap; i++) this.spawnItem();
 
-    this.keys = this.input.keyboard!.addKeys('W,A,S,D,UP,LEFT,DOWN,RIGHT,SPACE,E,Q') as Record<
+    this.keys = this.input.keyboard!.addKeys('W,A,S,D,UP,LEFT,DOWN,RIGHT,SPACE,E,Q,F,C') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -293,6 +370,19 @@ export class GameScene extends Phaser.Scene {
 
     this.add.rectangle(TROUGH.x, TROUGH.y, 84, 30, COLORS.trough).setStrokeStyle(3, COLORS.rail);
 
+    // The rebar: the best stick in town, wedged between the rails right where the dog lives.
+    const top = STICKS[STICKS.length - 1];
+    this.rebar = {
+      rect: this.add.rectangle(REBAR.x, REBAR.y, 6, 30, top.color).setAngle(24).setDepth(2),
+      label: this.gearLabel(REBAR.x, REBAR.y + 22, top.name),
+      bar: this.add
+        .rectangle(REBAR.x - 17, REBAR.y - 26, 34, 5, COLORS.buttonEdge)
+        .setOrigin(0, 0.5)
+        .setDepth(5)
+        .setScale(0, 1),
+      dwell: 0,
+    };
+
     for (const spot of FIRE_SPOTS) {
       const barrel = this.add.rectangle(spot.x, spot.y, 26, 30, COLORS.barrel).setDepth(2);
       this.walls.add(barrel);
@@ -338,6 +428,10 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.collider(keeperRect, this.walls);
     this.keeper = { rect: keeperRect, dir: 1, chasing: 0, broomIn: 0 };
 
+    // Hat and boots are a block on top of the hobo and a strip under him, until there is real art.
+    this.hatRect = this.add.rectangle(0, 0, 16, 8, 0).setDepth(4.1).setVisible(false);
+    this.bootRect = this.add.rectangle(0, 0, 26, 5, 0).setDepth(4.1).setVisible(false);
+
     // Stink has no meter. It shows as a green haze and a few flies that follow you about.
     this.stinkCloud = this.add.circle(0, 0, 20, COLORS.stink, 0).setDepth(3.5);
     for (let i = 0; i < 6; i++) {
@@ -372,10 +466,16 @@ export class GameScene extends Phaser.Scene {
     this.stickBase.setStrokeStyle(2, COLORS.buttonEdge, 0.5).setVisible(false);
     this.stickKnob = this.add.circle(0, 0, 20, COLORS.buttonEdge, 0.45).setScrollFactor(0).setDepth(10).setVisible(false);
 
-    const button = (x: number, y: number, label: string, onDown: () => void, onUp?: () => void): void => {
+    const button = (
+      x: number,
+      y: number,
+      label: string,
+      onDown: () => void,
+      onUp?: () => void,
+    ): { disc: Phaser.GameObjects.Arc; label: Phaser.GameObjects.Text } => {
       const disc = this.add.circle(x, y, TOUCH.buttonRadius, COLORS.button, 0.6).setScrollFactor(0).setDepth(10);
       disc.setStrokeStyle(2, COLORS.buttonEdge, 0.8).setInteractive({ useHandCursor: true });
-      this.add
+      const text = this.add
         .text(x, y, label, { fontFamily: 'Georgia, serif', fontSize: '16px', color: '#e8c07a' })
         .setOrigin(0.5)
         .setScrollFactor(0)
@@ -390,12 +490,18 @@ export class GameScene extends Phaser.Scene {
       };
       disc.on('pointerup', release);
       disc.on('pointerout', release);
+      return { disc, label: text };
     };
     const right = VIEW.w - 62;
     const low = VIEW.h - 96;
     button(right, low, 'SWING', () => (this.swingHeld = true), () => (this.swingHeld = false));
     button(right - 104, low + 28, 'EAT', () => (this.wantEat = true));
     button(right - 208, low + 28, 'DROP', () => (this.wantDrop = true));
+    // These two only show while the thing is in the sack.
+    this.playButton = button(right - 104, low - 76, 'PLAY', () => (this.wantPlay = true));
+    this.cheeseButton = button(right - 208, low - 76, 'CHEESE', () => (this.wantCheese = true));
+    this.showButton(this.playButton, false);
+    this.showButton(this.cheeseButton, false);
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
       if (over.length > 0) return; // that press belongs to a button
@@ -410,6 +516,14 @@ export class GameScene extends Phaser.Scene {
       if (pointer === this.steer) this.steer = null;
       if (!pointer.wasTouch && !pointer.rightButtonDown()) this.swingHeld = false;
     });
+  }
+
+  private showButton(b: { disc: Phaser.GameObjects.Arc; label: Phaser.GameObjects.Text }, on: boolean): void {
+    if (b.disc.visible === on) return;
+    b.disc.setVisible(on);
+    b.label.setVisible(on);
+    if (on) b.disc.setInteractive({ useHandCursor: true });
+    else b.disc.disableInteractive();
   }
 
   /** The direction the mouse or thumb is asking for, or null when neither is steering. */
@@ -454,6 +568,7 @@ export class GameScene extends Phaser.Scene {
     this.updateStinkLook();
     this.updateFires();
     this.updateDumpsters(dt);
+    this.updateGear(dt);
     this.updateEnvy(dt);
     this.updateTownsfolk(dt);
     this.updateKeeper(dt);
@@ -464,6 +579,7 @@ export class GameScene extends Phaser.Scene {
 
     if (this.health <= 0) {
       this.stats.days = this.sky.daysSurvived;
+      this.stats.cause = this.causeOfDeath();
       this.scene.start('GameOver', this.stats);
     }
   }
@@ -477,7 +593,25 @@ export class GameScene extends Phaser.Scene {
     this.playerStun -= dt;
     this.hurtFlash -= dt;
     this.safeFor -= dt;
+    this.stagger -= dt;
+    this.nagIn -= dt;
     this.player.setFillStyle(this.hurtFlash > 0 ? 0xff5040 : COLORS.player);
+    // Staggered, the hobo reels. The coat shows as the outline of the rectangle.
+    this.player.setAngle(this.stagger > 0 ? Math.sin(this.time.now / 55) * 16 : 0);
+    const coat = this.wear.coat;
+    if (coat) this.player.setStrokeStyle(4, coat.color);
+    else this.player.setStrokeStyle();
+    const hat = this.wear.hat;
+    const tall = hat?.keeperIgnores ? 16 : 8; // a top hat is a tall hat
+    this.hatRect.setVisible(hat !== null).setPosition(this.player.x, this.player.y - 14 - tall / 2);
+    if (hat) this.hatRect.setSize(16, tall).setFillStyle(hat.color).setStrokeStyle(1, COLORS.buttonEdge);
+    const boots = this.wear.boots;
+    this.bootRect.setVisible(boots !== null).setPosition(this.player.x, this.player.y + 15);
+    if (boots) this.bootRect.setFillStyle(boots.color).setStrokeStyle(1, COLORS.buttonEdge);
+    this.envy.gain = this.worn.reduce((gain, piece) => gain * (piece.envyGain ?? 1), 1);
+    this.playing -= dt;
+    this.breathIn -= dt;
+    this.greetIn -= dt;
 
     if (this.playerStun <= 0) {
       let dx = (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0);
@@ -493,8 +627,20 @@ export class GameScene extends Phaser.Scene {
         this.warmth >= WARMTH.slowBelow
           ? 1
           : WARMTH.slowTo + (1 - WARMTH.slowTo) * (this.warmth / WARMTH.slowBelow);
-      const speed = PLAYER.speed * (1 - 0.04 * this.sack.length) * chill;
-      body.setVelocity((dx / len) * speed, (dy / len) * speed);
+      const speed = PLAYER.speed * (1 - 0.04 * this.sack.length) * chill * this.wornProduct((piece) => piece.speed);
+      if (this.stagger > 0) {
+        // Still sliding the way the hit sent him; the feet only half listen.
+        const moving = dx !== 0 || dy !== 0;
+        const wantX = moving ? (dx / len) * speed * STAGGER.steerShare : 0;
+        const wantY = moving ? (dy / len) * speed * STAGGER.steerShare : 0;
+        const grip = Math.min(1, STAGGER.grip * dt);
+        body.setVelocity(
+          body.velocity.x + (wantX - body.velocity.x) * grip,
+          body.velocity.y + (wantY - body.velocity.y) * grip,
+        );
+      } else {
+        body.setVelocity((dx / len) * speed, (dy / len) * speed);
+      }
     }
 
     // Pick up whatever you walk over, if the sack has room.
@@ -510,29 +656,112 @@ export class GameScene extends Phaser.Scene {
         this.say(this.player.x, this.player.y - 24, 'Rustle.');
         continue;
       }
-      if (this.sack.length >= PLAYER.sackSlots) continue;
+      if (this.sack.length >= this.sackSlots) continue;
       this.sack.push(item.type);
       this.envy.add(item.type.value);
+      if (item.fromHobo) this.taken.push(item.type.gadget === 'harmonica' ? 'HARMONICA' : 'CHEESE');
       this.removeItem(item);
       sfx.pickup();
     }
 
     if (Phaser.Input.Keyboard.JustDown(k.E) || this.wantEat) this.eat();
     if (Phaser.Input.Keyboard.JustDown(k.Q) || this.wantDrop) this.dropFood();
+    if (Phaser.Input.Keyboard.JustDown(k.F) || this.wantPlay) this.playHarmonica();
+    if (Phaser.Input.Keyboard.JustDown(k.C) || this.wantCheese) this.unwrapCheese();
     this.wantEat = false;
     this.wantDrop = false;
-    if ((k.SPACE.isDown || this.swingHeld) && this.swingIn <= 0) this.swing();
+    this.wantPlay = false;
+    this.wantCheese = false;
+    this.showButton(this.playButton, this.sack.some((item) => item.gadget === 'harmonica'));
+    this.showButton(this.cheeseButton, this.sack.some((item) => item.gadget === 'limburger'));
+    this.playButton.disc.setAlpha(this.breathIn > 0 ? 0.35 : 1);
+    const handsFree = this.stagger <= 0 && this.playing <= 0;
+    if ((k.SPACE.isDown || this.swingHeld) && this.swingIn <= 0 && handsFree) this.swing();
+  }
+
+  /** Everything being worn, in no particular order. */
+  private get worn(): Wearable[] {
+    return [this.wear.hat, this.wear.coat, this.wear.boots].filter((piece): piece is Wearable => piece !== null);
+  }
+
+  private wornProduct(of: (piece: Wearable) => number): number {
+    return this.worn.reduce((product, piece) => product * of(piece), 1);
+  }
+
+  /** A tune no hobo can stand still for. Both hands on the harmonica, so no swinging. */
+  private playHarmonica(): void {
+    if (!this.sack.some((item) => item.gadget === 'harmonica')) return;
+    if (this.breathIn > 0) {
+      if (this.nagIn <= 0) {
+        this.nagIn = 2;
+        this.say(this.player.x, this.player.y - 24, 'Out of puff.');
+      }
+      return;
+    }
+    this.breathIn = HARMONICA.cooldownSec;
+    this.playing = HARMONICA.danceSec;
+    if (this.rebar) this.rebar.dwell = 0;
+    sfx.harmonica(HARMONICA.danceSec);
+    this.say(this.player.x, this.player.y - 24, 'Toodle-oo, toodle-ay.');
+    let first = true;
+    for (const hobo of this.hobos) {
+      if (hobo.ko || hobo.fleeing || dist(hobo.rect, this.player) > HARMONICA.radius) continue;
+      hobo.dancing = HARMONICA.danceSec;
+      bodyOf(hobo.rect).setVelocity(0, 0);
+      if (first) this.say(hobo.rect.x, hobo.rect.y - 20, pick(['Oh, I LIKE this one.', 'Hot dog!', 'Play it, friend.']));
+      first = false;
+    }
+  }
+
+  /** Limburger: every hobo's last resort. Stink goes straight to the top and the cheese is gone. */
+  private unwrapCheese(): void {
+    const at = this.sack.findIndex((item) => item.gadget === 'limburger');
+    if (at < 0) return;
+    const cheese = this.sack.splice(at, 1)[0];
+    this.envy.add(-cheese.value);
+    this.stink = STINK.max;
+    sfx.munch();
+    this.say(this.player.x, this.player.y - 24, pick(['Unwrapped.', 'Ripe.', 'May God forgive me.']));
+  }
+
+  private get sackSlots(): number {
+    return SACKS[this.sackTier].slots;
+  }
+
+  /** The share of a bindle hit that what you are wearing takes for you. */
+  private get block(): number {
+    const worn = this.worn.reduce((sum, piece) => sum + piece.block + (piece.blockPerCan ?? 0) * this.cans, 0);
+    const paper = this.padding > 0 ? ARMOR.paperBlock : 0;
+    return Math.min(ARMOR.maxBlock, worn + paper);
+  }
+
+  /** True, with a grumble, if what you are wearing won't let you bend over. */
+  private cantBend(): boolean {
+    if (!this.worn.some((piece) => piece.noSearch)) return false;
+    if (this.nagIn <= 0) {
+      this.nagIn = 3;
+      this.say(this.player.x, this.player.y - 24, pick(["Can't bend over in a barrel.", 'The barrel says no.']));
+    }
+    return true;
   }
 
   private eat(): void {
-    const food = this.sack.pop();
-    if (!food) return;
+    // The newest thing in the sack that is actually food.
+    let at = this.sack.length - 1;
+    while (at >= 0 && this.sack[at].gadget) at--;
+    if (at < 0) return;
+    const food = this.sack.splice(at, 1)[0];
     this.hunger = Math.min(PLAYER.maxHunger, this.hunger + food.food);
     this.stats.eaten++;
     sfx.munch();
     if (food.stink) {
       this.stink = Math.min(STINK.max, this.stink + food.stink);
       this.say(this.player.x, this.player.y - 24, pick(['Toot.', 'The musical fruit.', 'Pardon.']));
+    }
+    // Beans leave an empty can, and a hobo throws nothing away.
+    if (food === ITEMS[0] && this.cans < ARMOR.maxCans) {
+      this.cans++;
+      if (this.wear.coat?.blockPerCan) this.say(this.player.x, this.player.y - 44, 'Clank.');
     }
     // Eating in private takes the item's value off Envy. Eating where anyone can see adds to it.
     this.envy.add(this.isSeen() ? food.value : -food.value);
@@ -547,25 +776,34 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  /** Drops the newest thing in the sack, whatever it is. Only food is a lure. */
   private dropFood(): void {
-    const food = this.sack.pop();
-    if (!food) return;
-    this.envy.add(-food.value);
-    this.placeItem(food, this.player.x, this.player.y, true);
+    const thing = this.sack.pop();
+    if (!thing) return;
+    this.envy.add(-thing.value);
+    const item = this.placeItem(thing, this.player.x, this.player.y, true);
+    if (thing.gadget) {
+      item.dropped = false; // nobody fights over a harmonica
+      item.rect.setStrokeStyle(2, COLORS.buttonEdge);
+      item.label = this.gearLabel(item.rect.x, item.rect.y + 18, thing.name);
+    }
   }
 
   private swing(): void {
+    const stick = STICKS[this.stickTier];
+    if (this.rebar) this.rebar.dwell = 0; // prying takes both hands
     this.swingIn = PLAYER.swingCooldown * (1 + 0.08 * this.sack.length); // heavier bindle, slower swing
-    const arc = this.add.circle(this.player.x, this.player.y, PLAYER.swingRadius, 0xffffff, 0.22).setDepth(5);
+    const arc = this.add.circle(this.player.x, this.player.y, stick.reach, 0xffffff, 0.22).setDepth(5);
+    arc.setStrokeStyle(2, stick.color, 0.8);
     this.tweens.add({ targets: arc, alpha: 0, duration: 140, onComplete: () => arc.destroy() });
 
     let hit = false;
     for (const hobo of this.hobos) {
-      if (hobo.ko || dist(this.player, hobo.rect) > PLAYER.swingRadius) continue;
-      this.hitHobo(hobo, this.player, null);
+      if (hobo.ko || dist(this.player, hobo.rect) > stick.reach) continue;
+      this.hitHobo(hobo, this.player, null, stick.damage, 260 * this.wornProduct((piece) => piece.kick ?? 1));
       hit = true;
     }
-    if (dist(this.player, this.dog.rect) <= PLAYER.swingRadius) {
+    if (dist(this.player, this.dog.rect) <= stick.reach) {
       this.shove(this.dog.rect, this.player, 320);
       this.dog.stun = 0.7;
       hit = true;
@@ -573,15 +811,54 @@ export class GameScene extends Phaser.Scene {
     if (hit) sfx.bonk();
   }
 
-  private hurtPlayer(amount: number, from: Point): void {
+  private hurtPlayer(amount: number, from: Point, by: 'bindle' | 'dog'): void {
     // A moment of mercy after each hit, so a crowd can't land ten blows in one frame.
-    if (this.safeFor > 0) return;
+    if (this.safeFor > 0 || this.health <= 0) return;
     this.safeFor = PLAYER.mercySec;
-    this.health -= amount;
+    // Coats, cans and newspaper stop bindles. Nothing stops the dog.
+    this.health -= by === 'bindle' ? amount * (1 - this.block) : amount;
+    if (this.health <= 0) this.killedBy = by;
     this.hurtFlash = 0.12;
-    this.playerStun = 0.18;
-    this.shove(this.player, from, 240);
+    if (this.rebar) this.rebar.dwell = 0;
     sfx.bonk();
+
+    // A man in a barrel stays where he is put.
+    if (this.worn.some((piece) => piece.steady)) return;
+    this.playerStun = 0.18;
+    const surefooted = this.worn.some((piece) => piece.noStagger);
+    if (by === 'bindle' && !surefooted && this.stagger <= 0 && Math.random() < STAGGER.chance) {
+      this.stagger = Phaser.Math.FloatBetween(STAGGER.minSec, STAGGER.maxSec);
+      this.shove(this.player, from, STAGGER.shoveSpeed);
+      this.say(this.player.x, this.player.y - 24, pick(['Oof!', 'Stars!', 'Who turned the town?', 'Whoa, Nelly.']));
+      return;
+    }
+    this.shove(this.player, from, 240);
+  }
+
+  /** One line for the game-over screen, so the play-tester knows which system did the killing. */
+  private causeOfDeath(): string {
+    const coat = this.wear.coat;
+    if (this.killedBy === 'bindle') {
+      if (coat?.steady) return 'Bonked to death inside a barrel. It rang like a bell.';
+      if (this.wear.hat?.keeperIgnores) return 'Bonked to death in a top hat and monocle. He was asking for it.';
+      return 'Bonked into the hereafter by a fellow hobo.';
+    }
+    if (this.killedBy === 'dog') return 'Seen off for good by the railyard dog.';
+    const starving = this.hunger <= 0;
+    const freezing = this.warmth <= 0;
+    if (starving && freezing) return 'Starved and froze at the same time. Thorough.';
+    if (starving) {
+      const food = this.sack.filter((item) => !item.gadget);
+      if (food.length === 0) return 'Starved, without a bean to his name.';
+      const what = food.length === 1 ? `${food[0].name}` : `${food.length} things to eat`;
+      return `Starved with ${what} in the sack. He was saving it.`;
+    }
+    if (freezing) {
+      return coat === COATS[0]
+        ? 'Froze in a wool coat, which takes some doing.'
+        : 'Froze solid. The town has a new statue.';
+    }
+    return 'Cause of death unknown. Suspect the beans.';
   }
 
   private updateNeeds(dt: number): void {
@@ -589,7 +866,9 @@ export class GameScene extends Phaser.Scene {
     if (this.hunger <= 0) this.health -= PLAYER.starvePerSec * dt;
 
     // Warmth: a fire always wins; otherwise night and rain take it and dry daylight gives it back.
-    const cold = (this.sky.isNight ? WARMTH.nightPerSec : 0) + (this.sky.raining ? WARMTH.rainPerSec : 0);
+    const cold =
+      ((this.sky.isNight ? WARMTH.nightPerSec : 0) + (this.sky.raining ? WARMTH.rainPerSec : 0)) *
+      this.wornProduct((piece) => piece.cold);
     if (this.sky.raining && this.padding > 0) {
       this.padding = 0;
       this.say(this.player.x, this.player.y - 24, 'Soggy newspaper.');
@@ -666,7 +945,7 @@ export class GameScene extends Phaser.Scene {
       }
       const dx = Math.max(Math.abs(this.player.x - bin.rect.x) - bin.rect.width / 2, 0);
       const dy = Math.max(Math.abs(this.player.y - bin.rect.y) - bin.rect.height / 2, 0);
-      const against = Math.hypot(dx, dy) < DUMPSTER.reach;
+      const against = Math.hypot(dx, dy) < DUMPSTER.reach && !this.cantBend();
       bin.dwell = against ? bin.dwell + dt : 0;
       bin.progress.setScale(Math.min(bin.dwell / DUMPSTER.diveSec, 1), 1);
       if (bin.dwell >= DUMPSTER.diveSec) this.dive(bin);
@@ -691,6 +970,135 @@ export class GameScene extends Phaser.Scene {
       const item = this.placeItem(type, x, y, false);
       item.noPickupUntil = this.time.now + 400; // long enough to see what came out
     }
+    // Now and then there is something better than food in there.
+    const find = Math.random() < GEAR.dumpsterChance ? this.randomGear() : null;
+    if (find) this.placeGear(find, bin.rect.x + Phaser.Math.Between(-30, 30), bin.rect.y + below * 82, false, false);
+  }
+
+  // ---------------------------------------------------------------- gear
+
+  private gearLabel(x: number, y: number, words: string): Phaser.GameObjects.Text {
+    return this.add
+      .text(x, y, words, { fontFamily: 'Georgia, serif', fontSize: '12px', fontStyle: 'italic', color: COLORS.gearLabel })
+      .setOrigin(0.5)
+      .setDepth(2);
+  }
+
+  private gearName(gear: Gear): string {
+    if (gear.kind === 'item') return gear.item.name;
+    return gear.kind === 'stick' ? STICKS[gear.tier].name : gear.kind === 'sack' ? SACKS[gear.tier].name : gear.wear.name;
+  }
+
+  private gearColor(gear: Gear): number {
+    if (gear.kind === 'item') return gear.item.color;
+    return gear.kind === 'stick' ? STICKS[gear.tier].color : gear.kind === 'sack' ? SACKS[gear.tier].color : gear.wear.color;
+  }
+
+  /** A piece worth finding: never a stick or sack no better than yours, never the coat on your back. */
+  private randomGear(): Gear | null {
+    const useful = GEAR_FINDS.filter(({ gear }) =>
+      gear.kind === 'stick'
+        ? gear.tier > this.stickTier
+        : gear.kind === 'sack'
+          ? gear.tier > this.sackTier
+          : gear.kind === 'item'
+            ? !this.sack.includes(gear.item)
+            : this.wear[gear.wear.slot] !== gear.wear,
+    );
+    let roll = Math.random() * useful.reduce((sum, find) => sum + find.weight, 0);
+    for (const find of useful) {
+      roll -= find.weight;
+      if (roll <= 0) return find.gear;
+    }
+    return null;
+  }
+
+  private placeGear(gear: Gear, x: number, y: number, underfoot: boolean, fromHobo: boolean): void {
+    // A harmonica or a cheese goes in the sack, so on the ground it is an item like food, with a name.
+    if (gear.kind === 'item') {
+      const item = this.placeItem(gear.item, x, y, false);
+      item.rect.setStrokeStyle(2, COLORS.buttonEdge);
+      item.label = this.gearLabel(x, y + 18, gear.item.name);
+      item.fromHobo = fromHobo;
+      return;
+    }
+    // Sticks are long and thin; everything else is a square with an outline, to tell it from food.
+    const rect =
+      gear.kind === 'stick'
+        ? this.add.rectangle(x, y, 6, 28, this.gearColor(gear)).setAngle(60)
+        : this.add.rectangle(x, y, 18, 18, this.gearColor(gear)).setStrokeStyle(2, COLORS.buttonEdge);
+    rect.setDepth(2);
+    this.gear.push({ rect, label: this.gearLabel(x, y + 20, this.gearName(gear)), gear, underfoot, fromHobo });
+  }
+
+  private updateGear(dt: number): void {
+    for (const piece of [...this.gear]) {
+      const d = dist(this.player, piece.rect);
+      if (piece.underfoot) {
+        if (d > GEAR.stepOffRadius) piece.underfoot = false;
+        continue;
+      }
+      if (d > GEAR.pickupRadius || !this.takeGear(piece.gear)) continue;
+      if (piece.fromHobo) {
+        const gear = piece.gear;
+        if (gear.kind === 'stick') this.taken.push('STICK');
+        else if (gear.kind === 'sack') this.taken.push('SACK');
+        else if (gear.kind === 'wear') this.taken.push(gear.wear.muttered ?? gear.wear.slot.toUpperCase());
+      }
+      piece.rect.destroy();
+      piece.label.destroy();
+      this.gear = this.gear.filter((other) => other !== piece);
+      sfx.pickup();
+    }
+
+    // Prying the rebar out of the track takes a while, and the dog has opinions.
+    const rebar = this.rebar;
+    if (!rebar) return;
+    const still = bodyOf(this.player).velocity.length() < 20;
+    const prying = dist(this.player, rebar.rect) < REBAR.reach && still && this.playerStun <= 0 && !this.cantBend();
+    rebar.dwell = prying ? rebar.dwell + dt : 0;
+    rebar.bar.setScale(Math.min(rebar.dwell / REBAR.prySec, 1), 1);
+    if (rebar.dwell < REBAR.prySec) return;
+    rebar.rect.destroy();
+    rebar.label.destroy();
+    rebar.bar.destroy();
+    this.rebar = null;
+    this.takeGear({ kind: 'stick', tier: STICKS.length - 1 });
+    sfx.pickup();
+  }
+
+  /** Puts a piece of gear to use. False if it is no better than what you have. */
+  private takeGear(gear: Gear): boolean {
+    const { x, y } = this.player;
+    if (gear.kind === 'stick') {
+      if (gear.tier <= this.stickTier) return false;
+      this.placeGear({ kind: 'stick', tier: this.stickTier }, x, y, true, false);
+      this.stickTier = gear.tier;
+      this.envy.add(STICKS[gear.tier].envy);
+      this.say(x, y - 24, gear.tier === STICKS.length - 1 ? 'Now THAT is a stick.' : 'A finer stick.');
+      return true;
+    }
+    if (gear.kind === 'sack') {
+      if (gear.tier <= this.sackTier) return false;
+      this.placeGear({ kind: 'sack', tier: this.sackTier }, x, y, true, false);
+      this.sackTier = gear.tier;
+      this.envy.add(SACKS[gear.tier].envy);
+      this.say(x, y - 24, 'Room for more.');
+      return true;
+    }
+    if (gear.kind === 'item') return false; // sack items are picked up as items, not here
+    const old = this.wear[gear.wear.slot];
+    if (old === gear.wear) return false;
+    if (old) this.placeGear({ kind: 'wear', wear: old }, x, y, true, false);
+    this.wear[gear.wear.slot] = gear.wear;
+    this.envy.add(gear.wear.envy);
+    const w = gear.wear;
+    this.say(
+      x,
+      y - 24,
+      w.steady ? 'Snug.' : w.blockPerCan ? 'Clank.' : w.keeperIgnores ? 'I say.' : w.slot === 'hat' ? 'Bong.' : 'Fits like it was stolen.',
+    );
+    return true;
   }
 
   // ---------------------------------------------------------------- envy and the Panic
@@ -735,6 +1143,11 @@ export class GameScene extends Phaser.Scene {
     this.hordeSize = count;
     this.brawling = false;
     this.meleeAge = 0;
+    // Word gets round. This horde knows what you took off the last one; what you take off
+    // this one is for the next.
+    this.mutters = this.taken;
+    this.taken = [];
+    this.mutterIn = PANIC.mutterMaxSec;
     // They arrive in a stream, not all at once, so the brawl keeps getting fed.
     const gapMs = (PANIC.arrivalSec * 1000) / count;
     this.stillToArrive = count;
@@ -767,6 +1180,7 @@ export class GameScene extends Phaser.Scene {
       looter: 0,
       lootValue: 0,
       madAtPlayer: 0,
+      dancing: 0,
     });
   }
 
@@ -809,6 +1223,20 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    if (this.state === 'melee' && this.mutters.length > 0) {
+      this.mutterIn -= dt;
+      if (this.mutterIn <= 0) {
+        this.mutterIn = Phaser.Math.FloatBetween(PANIC.mutterMinSec, PANIC.mutterMaxSec);
+        const near = this.hobos.filter((h) => !h.ko && dist(h.rect, this.player) < PANIC.mutterRadius);
+        if (near.length > 0) {
+          const hobo = pick(near);
+          const what = pick(this.mutters);
+          const line = pick([`...took muh ${what}`, `...that's muh ${what}`, `...muh ${what}...`, `...gimme back muh ${what}`]);
+          this.say(hobo.rect.x, hobo.rect.y - 20, line);
+        }
+      }
+    }
+
     for (const hobo of this.hobos) {
       if (hobo.ko) continue;
       hobo.cooldown -= dt;
@@ -818,9 +1246,17 @@ export class GameScene extends Phaser.Scene {
         hobo.looter -= dt;
         if (hobo.looter <= 0) hobo.rect.setFillStyle(COLORS.hobo);
       }
+      if (hobo.dancing > 0 && !hobo.fleeing) {
+        // He cannot help it. A little jig on the spot until the tune stops.
+        hobo.dancing -= dt;
+        hobo.rect.setAngle(hobo.dancing > 0 ? Math.sin(this.time.now / 90 + hobo.speed) * 22 : 0);
+        if (hobo.stun <= 0) bodyOf(hobo.rect).setVelocity(Math.sin(this.time.now / 180 + hobo.speed) * 40, 0);
+        continue;
+      }
       if (hobo.stun > 0) continue;
 
       if (hobo.fleeing) {
+        hobo.rect.setAngle(0);
         this.moveToward(hobo.rect, TRAIN_EXIT, hobo.speed * 1.5);
         continue;
       }
@@ -862,8 +1298,10 @@ export class GameScene extends Phaser.Scene {
 
     // 4. The player: always if he bonked you, otherwise only some of the time and only for his food.
     if (hobo.madAtPlayer > 0) return { kind: 'player' };
-    const focus = this.brawling ? PANIC.playerFocus : PANIC.mobFocus;
-    if (this.sack.length > 0 && Math.random() < focus) return { kind: 'player' };
+    //    A top hat changes that: he is the first man anyone looks at, food or no food.
+    const dandy = Math.max(0, ...this.worn.map((piece) => piece.hoboFocus ?? 0));
+    const focus = Math.max(this.brawling ? PANIC.playerFocus : PANIC.mobFocus, dandy);
+    if ((this.sack.length > 0 || dandy > 0) && Math.random() < focus) return { kind: 'player' };
 
     // 5. While the mob is gathering, everyone else crowds in round the player and looms.
     if (!this.brawling) return { kind: 'crowd' };
@@ -941,17 +1379,17 @@ export class GameScene extends Phaser.Scene {
    */
   private hoboSwing(hobo: Hobo): void {
     hobo.cooldown = PANIC.hoboSwingCooldown * Phaser.Math.FloatBetween(0.8, 1.3);
-    if (dist(hobo.rect, this.player) < PANIC.hoboReach) this.hurtPlayer(PANIC.hoboDamage, hobo.rect);
+    if (dist(hobo.rect, this.player) < PANIC.hoboReach) this.hurtPlayer(PANIC.hoboDamage, hobo.rect, 'bindle');
     const aimedAt = hobo.target?.kind === 'hobo' ? hobo.target.hobo : null;
     for (const other of this.hobos) {
       if (other === hobo || other.ko || dist(hobo.rect, other.rect) > PANIC.hoboReach) continue;
       if (!this.brawling && other !== aimedAt) continue;
-      this.hitHobo(other, hobo.rect, hobo);
+      this.hitHobo(other, hobo.rect, hobo, 1);
     }
   }
 
-  private hitHobo(victim: Hobo, from: Point, attacker: Hobo | null): void {
-    victim.hp--;
+  private hitHobo(victim: Hobo, from: Point, attacker: Hobo | null, damage: number, shove = 260): void {
+    victim.hp -= damage;
     victim.stun = 0.25;
     victim.grudge = attacker;
     if (attacker) victim.target = { kind: 'hobo', hobo: attacker };
@@ -959,16 +1397,19 @@ export class GameScene extends Phaser.Scene {
       victim.madAtPlayer = PANIC.madAtPlayerSec;
       victim.target = { kind: 'player' };
     }
-    this.shove(victim.rect, from, 260);
+    this.shove(victim.rect, from, shove);
     if (victim.hp > 0) return;
 
     victim.ko = true;
-    victim.rect.setFillStyle(COLORS.hoboKo).setDepth(2);
+    victim.rect.setFillStyle(COLORS.hoboKo).setDepth(2).setAngle(0);
     bodyOf(victim.rect).setVelocity(0, 0);
     bodyOf(victim.rect).enable = false;
     if (!attacker) this.stats.bonked++;
     // A flattened hobo sometimes spills what he was carrying: the aftermath loot.
     if (Math.random() < 0.45) this.placeItem(this.randomItemType(), victim.rect.x, victim.rect.y, false);
+    // Now and then it is something he was wearing.
+    const find = Math.random() < GEAR.hoboDropChance ? this.randomGear() : null;
+    if (find) this.placeGear(find, victim.rect.x + 22, victim.rect.y, false, true);
   }
 
   // ---------------------------------------------------------------- townsfolk and the dog
@@ -1001,8 +1442,8 @@ export class GameScene extends Phaser.Scene {
         this.pie.setVisible(true);
       }
     } else {
-      const lifting =
-        dist(this.player, SILL) < SHOPKEEPER.sillReach && this.sack.length < PLAYER.sackSlots && this.playerStun <= 0;
+      const atSill = dist(this.player, SILL) < SHOPKEEPER.sillReach;
+      const lifting = atSill && this.sack.length < this.sackSlots && this.playerStun <= 0 && !this.cantBend();
       this.pieDwell = lifting ? this.pieDwell + dt : 0;
       this.pieBar.setScale(Math.min(this.pieDwell / SHOPKEEPER.liftSec, 1), 1);
       if (this.pieDwell >= SHOPKEEPER.liftSec) {
@@ -1037,8 +1478,18 @@ export class GameScene extends Phaser.Scene {
     // He sees a long way in front of him and not far behind. He smells in every direction.
     const ahead = (this.player.x - keeper.rect.x) * keeper.dir > 0;
     const notice =
-      (ahead ? SHOPKEEPER.noticeAhead : SHOPKEEPER.noticeBehind) + SHOPKEEPER.stinkRadius * this.stinkRatio;
-    if (keeper.chasing <= 0 && onProperty && dist(keeper.rect, this.player) < notice) {
+      (ahead ? SHOPKEEPER.noticeAhead : SHOPKEEPER.noticeBehind) +
+      SHOPKEEPER.stinkRadius * this.stinkRatio +
+      this.worn.reduce((sum, piece) => sum + (piece.keeperNotice ?? 0), 0);
+    const noticed = onProperty && dist(keeper.rect, this.player) < notice;
+    // A top hat and monocle: clearly a gentleman, whatever the smell.
+    if (noticed && this.worn.some((piece) => piece.keeperIgnores)) {
+      keeper.chasing = 0;
+      if (this.greetIn <= 0) {
+        this.greetIn = 8;
+        this.say(keeper.rect.x, keeper.rect.y - 24, pick(['Good day, sir.', 'Lovely weather, sir.', 'Do come again, sir.']));
+      }
+    } else if (keeper.chasing <= 0 && noticed) {
       keeper.chasing = SHOPKEEPER.giveUpSec;
       this.say(keeper.rect.x, keeper.rect.y - 24, pick(['GIT!', 'SCRAM!', 'Not in MY doorway!', 'I just swept there!']));
     }
@@ -1094,11 +1545,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     const playerInYard = this.player.y > YARD_TOP - 20;
-    if (playerInYard && dist(dog.rect, this.player) < DOG.sightRadius) {
+    // Clanking carries: some coats let him notice you from further off.
+    const notice = DOG.sightRadius * this.wornProduct((piece) => piece.dogNotice);
+    if (playerInYard && dist(dog.rect, this.player) < notice) {
       this.moveToward(dog.rect, this.player, DOG.speed);
       if (dist(dog.rect, this.player) < 24 && dog.biteIn <= 0) {
         dog.biteIn = DOG.biteCooldown;
-        this.hurtPlayer(DOG.biteDamage, dog.rect);
+        this.hurtPlayer(DOG.biteDamage, dog.rect, 'dog');
       }
     } else if (dist(dog.rect, dog.home) > 12) {
       this.moveToward(dog.rect, dog.home, DOG.speed * 0.5);
@@ -1146,6 +1599,7 @@ export class GameScene extends Phaser.Scene {
 
   private removeItem(item: GroundItem): void {
     item.rect.destroy();
+    item.label?.destroy();
     this.items = this.items.filter((other) => other !== item);
   }
 
@@ -1176,10 +1630,16 @@ export class GameScene extends Phaser.Scene {
       return '#'.repeat(filled) + '-'.repeat(10 - filled);
     };
     const sack = this.sack.map((item) => item.name).join(', ') || 'empty';
+    const worn = this.wear.coat;
+    const coat = !worn ? 'none' : worn.blockPerCan ? `${worn.name} (${this.cans} cans)` : worn.name;
     this.hud.setText(
       `Day ${this.sky.day}   Health ${bar(this.health, PLAYER.maxHealth)}   ` +
         `Hunger ${bar(this.hunger, PLAYER.maxHunger)}   Warmth ${bar(this.warmth, WARMTH.max)}` +
-        `${this.padding > 0 ? ' +paper' : ''}\nSack ${this.sack.length}/${PLAYER.sackSlots}: ${sack}`,
+        `${this.padding > 0 ? ' +paper' : ''}\n` +
+        `Sack (${SACKS[this.sackTier].name}) ${this.sack.length}/${this.sackSlots}: ${sack}\n` +
+        `Stick ${STICKS[this.stickTier].name}   Coat ${coat}   ` +
+        `Hat ${this.wear.hat?.name ?? 'none'}   Boots ${this.wear.boots?.name ?? 'none'}` +
+        `${this.stagger > 0 ? '   SEEING STARS' : ''}`,
     );
   }
 }
